@@ -8,6 +8,7 @@ export interface ClickUpConnector { poll(since: number): Promise<{ events: Inbox
 
 const API = "https://api.clickup.com/api/v2";
 const MAX_BODY = 4000;
+const MAX_PAGES = 20; // por lista y por poll (100 tareas por página)
 
 interface CuUser { id: number; username?: string }
 interface CuTask {
@@ -48,7 +49,15 @@ export function createClickUpConnector(opts: { token: string; listIds: string[];
       const events: InboxEvent[] = [];
       let nextCursor = since;
       for (const listId of opts.listIds) {
-        const { tasks } = await get<{ tasks: CuTask[] }>(`/list/${encodeURIComponent(listId)}/task?date_updated_gt=${since}&subtasks=true&include_closed=false`);
+        const tasks: CuTask[] = [];
+        // Pagina hasta last_page (o una página vacía), con tope MAX_PAGES. Un 429 sale como
+        // ClickUpError(429) y el backoff del loop lo reintenta sin avanzar el cursor.
+        for (let page = 0; page < MAX_PAGES; page++) {
+          const res = await get<{ tasks: CuTask[]; last_page?: boolean }>(
+            `/list/${encodeURIComponent(listId)}/task?date_updated_gt=${since}&subtasks=true&include_closed=false&page=${page}`);
+          tasks.push(...res.tasks);
+          if (res.last_page === true || res.tasks.length === 0) break;
+        }
         for (const t of tasks) {
           nextCursor = Math.max(nextCursor, Number(t.date_updated) || 0);
           const mine = (t.assignees ?? []).some((a) => a.id === self);

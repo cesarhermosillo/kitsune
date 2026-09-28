@@ -55,7 +55,8 @@ async function start(dir: string) {
     {
       name: "clickup", intervalMs: k.config.poll.intervalSec * 1000,
       run: async () => {
-        const since = Number(k.store.getCursor("clickup") ?? Date.now() - 24 * 3_600_000);
+        // Primera vez: solo la última hora, para no inundar Telegram ni el rate limit de ClickUp.
+        const since = Number(k.store.getCursor("clickup") ?? Date.now() - 3_600_000);
         const { events, nextCursor } = await k.clickup.poll(since);
         for (const event of events) await k.app.onInboxEvent(event);
         k.store.setCursor("clickup", String(nextCursor));

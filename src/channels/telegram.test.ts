@@ -110,3 +110,20 @@ test("telegram-api llama a la Bot API y propaga errores", async () => {
   assert.equal(calls[0], "https://api.telegram.org/bot123:abc/sendMessage");
   await assert.rejects(() => api.answerCallbackQuery("x"), /Bad Request/);
 });
+
+test("I5: todo texto saliente se acota a 4000 caracteres con …", async () => {
+  const { api, sent } = fakeApi();
+  const channel = createTelegramChannel({ api, chatId: 42 });
+  await channel.sendNotice("n".repeat(5000));
+  await channel.sendProposal({ ...P, request: "q".repeat(5000) }, E);
+  await channel.updateProposal({ ...P, request: "q".repeat(5000), telegramMessageId: 9, status: "launched" }, "✅");
+  await channel.sendQuestion("cowork-a", "¿".repeat(5000), ["Sí"]);
+  await channel.askForRequest({ ...P, request: "q".repeat(5000) });
+  for (const call of sent) {
+    const text = String(call.method === "editMessageText" ? call.args[2] : call.args[1]);
+    assert.equal(text.length, 4000, call.method);
+    assert.ok(text.endsWith("…"));
+  }
+  await channel.sendNotice("corto");
+  assert.equal(sent.at(-1)!.args[1], "corto");
+});

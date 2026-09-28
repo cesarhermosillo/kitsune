@@ -1,4 +1,4 @@
-import { TriageError, type Brain } from "./brain.js";
+import { capRequest, TriageError, type Brain } from "./brain.js";
 import { parseUpdate, type Channel, type ChannelEvent } from "./channels/telegram.js";
 import type { TgUpdate } from "./channels/telegram-api.js";
 import type { Policy } from "./policy.js";
@@ -184,7 +184,7 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
       const proposalId = store.takePendingEdit(event.replyToMessageId);
       if (proposalId) {
         try {
-          const updated = store.updatePending(proposalId, { request: event.text.slice(0, 8000) }, deps.now());
+          const updated = store.updatePending(proposalId, { request: capRequest(event.text) }, deps.now());
           store.audit("user", "edit_request", proposalId, {}, deps.now());
           await repropose(updated);
         } catch (error) {

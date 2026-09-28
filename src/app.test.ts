@@ -384,3 +384,13 @@ test("I4: un aviso que falla no lanza fuera de onInboxEvent (best-effort)", asyn
   await h.app.onInboxEvent(EVENT);
   assert.equal(h.store.hasEvent(EVENT.id), true);
 });
+
+test("I5: la petición editada por el usuario se acota igual que la del motor", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(cb("edit_request", p.id));
+  await h.app.onChannelEvent({ type: "message", chatId: 42, messageId: 200, text: "€".repeat(5000), replyToMessageId: 102 });
+  const request = h.store.getProposal(p.id)!.request;
+  assert.ok(request.length <= 3500 && Buffer.byteLength(request, "utf8") <= 8000);
+});

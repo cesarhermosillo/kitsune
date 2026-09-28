@@ -4,7 +4,31 @@ import type { Catalog, InboxEvent, Triage } from "./types.js";
 export class TriageError extends Error {}
 export interface Brain { triage(event: InboxEvent, catalog: Catalog): Promise<Triage> }
 
-const MAX_REQUEST = 8000;
+// Límites: Telegram acepta 4096 caracteres por mensaje y Ronin 8 KB UTF-8 por petición.
+const MAX_REQUEST_CHARS = 3500;
+const MAX_REQUEST_BYTES = 8000;
+const MAX_SUMMARY = 1000;
+const MAX_REASON = 500;
+
+/** Recorta sin partir caracteres a `maxChars` unidades UTF-16 y `maxBytes` bytes UTF-8. */
+export function capText(text: string, maxChars: number, maxBytes = Infinity): string {
+  let chars = 0;
+  let bytes = 0;
+  let out = "";
+  for (const ch of text) {
+    const b = Buffer.byteLength(ch, "utf8");
+    if (chars + ch.length > maxChars || bytes + b > maxBytes) break;
+    out += ch;
+    chars += ch.length;
+    bytes += b;
+  }
+  return out;
+}
+
+/** Límite de toda petición que va a Ronin (del motor o editada por el usuario). */
+export const capRequest = (text: string) => capText(text, MAX_REQUEST_CHARS, MAX_REQUEST_BYTES);
+const capReason = (text: string) => capText(text, MAX_REASON);
+const capSummary = (text: string) => capText(text, MAX_SUMMARY);
 
 export function buildPrompt(event: InboxEvent, catalog: Catalog): string {
   const workflows = catalog.workflows.map((w) => `- ${w.name}: ${w.stages.join(" → ")}`).join("\n");
@@ -50,20 +74,20 @@ const isStr = (v: unknown): v is string => typeof v === "string" && v.trim().len
 export function parseTriage(raw: string, catalog: Catalog): Triage {
   const data = extractJson(raw) as Record<string, unknown>;
   if (!isStr(data.reason)) throw new TriageError("falta reason");
-  if (data.action === "ignore") return { action: "ignore", reason: data.reason };
+  if (data.action === "ignore") return { action: "ignore", reason: capReason(data.reason) };
   if (data.action === "notify") {
     if (!isStr(data.summary)) throw new TriageError("falta summary");
-    return { action: "notify", summary: data.summary, reason: data.reason };
+    return { action: "notify", summary: capSummary(data.summary), reason: capReason(data.reason) };
   }
   if (data.action === "propose_session") {
     if (!isStr(data.repo) || !isStr(data.workflow) || !isStr(data.request)) throw new TriageError("propuesta incompleta");
-    const request = data.request.slice(0, MAX_REQUEST);
+    const request = capRequest(data.request);
     const knownRepo = catalog.repos.includes(data.repo);
     const knownWorkflow = catalog.workflows.some((w) => w.name === data.workflow);
     if (!knownRepo || !knownWorkflow) {
-      return { action: "notify", summary: request, reason: `fuera del catálogo: repo=${data.repo} workflow=${data.workflow}` };
+      return { action: "notify", summary: capSummary(request), reason: capReason(`fuera del catálogo: repo=${data.repo} workflow=${data.workflow}`) };
     }
-    return { action: "propose_session", repo: data.repo, workflow: data.workflow, request, reason: data.reason };
+    return { action: "propose_session", repo: data.repo, workflow: data.workflow, request, reason: capReason(data.reason) };
   }
   throw new TriageError(`acción desconocida: ${String(data.action)}`);
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPrompt, createBrain, parseTriage, TriageError } from "./brain.js";
+import { buildPrompt, capRequest, createBrain, parseTriage, TriageError } from "./brain.js";
 import { EngineError, type Engine } from "./engines/types.js";
 import type { Catalog, InboxEvent } from "./types.js";
 
@@ -43,10 +43,31 @@ test("parseTriage rechaza texto sin JSON o con acción desconocida", () => {
   assert.throws(() => parseTriage(JSON.stringify({ action: "notify" }), CATALOG), TriageError);
 });
 
-test("parseTriage recorta peticiones de más de 8000 caracteres", () => {
+test("I5: parseTriage recorta la petición a 3500 caracteres", () => {
   const raw = JSON.stringify({ action: "propose_session", repo: "todo-api", workflow: "plan-tdd-evidencia", request: "x".repeat(9000), reason: "r" });
   const triage = parseTriage(raw, CATALOG);
-  assert.equal(triage.action === "propose_session" && triage.request.length, 8000);
+  assert.equal(triage.action === "propose_session" && triage.request.length, 3500);
+});
+
+test("I5: capRequest respeta 8000 bytes UTF-8 y no parte caracteres", () => {
+  const euros = capRequest("€".repeat(3500));
+  assert.ok(Buffer.byteLength(euros, "utf8") <= 8000);
+  assert.equal(euros, "€".repeat(2666));
+  const emoji = capRequest("😀".repeat(3000));
+  assert.ok(emoji.length <= 3500 && Buffer.byteLength(emoji, "utf8") <= 8000);
+  assert.doesNotMatch(emoji, /[\uD800-\uDBFF]$/);
+  assert.equal(capRequest("corta"), "corta");
+});
+
+test("I5: summary ≤ 1000 y reason ≤ 500, también fuera del catálogo", () => {
+  const notify = parseTriage(JSON.stringify({ action: "notify", summary: "s".repeat(3000), reason: "r".repeat(3000) }), CATALOG);
+  assert.equal(notify.action === "notify" && notify.summary.length, 1000);
+  assert.equal(notify.reason.length, 500);
+  assert.equal(parseTriage(JSON.stringify({ action: "ignore", reason: "r".repeat(3000) }), CATALOG).reason.length, 500);
+  const outside = parseTriage(JSON.stringify({ action: "propose_session", repo: "x".repeat(3000), workflow: "w", request: "q".repeat(3000), reason: "r" }), CATALOG);
+  assert.equal(outside.action, "notify");
+  assert.ok(outside.reason.length <= 500);
+  assert.equal(outside.action === "notify" && outside.summary.length, 1000);
 });
 
 test("createBrain usa el motor con el timeout y traduce errores del motor a TriageError", async () => {

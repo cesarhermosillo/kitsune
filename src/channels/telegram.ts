@@ -55,11 +55,20 @@ export function renderProposal(p: Proposal, event: InboxEvent | null): string {
   ].join("\n");
 }
 
+const MAX_TEXT = 4000; // Telegram acepta 4096 caracteres por mensaje.
+/** Acota cualquier texto saliente a MAX_TEXT caracteres (incluida la "…"). */
+export function fitText(text: string): string {
+  if (text.length <= MAX_TEXT) return text;
+  let cut = text.slice(0, MAX_TEXT - 1);
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+  return `${cut}…`;
+}
+
 type Button = { text: string; callback_data: string };
 const keyboard = (rows: Button[][]) => ({ reply_markup: { inline_keyboard: rows } });
 
 export function createTelegramChannel(opts: { api: TelegramApi; chatId: number }): Channel {
-  const send = async (text: string, extra?: Record<string, unknown>) => (await opts.api.sendMessage(opts.chatId, text, extra)).message_id;
+  const send = async (text: string, extra?: Record<string, unknown>) => (await opts.api.sendMessage(opts.chatId, fitText(text), extra)).message_id;
   return {
     sendProposal: (p, event) => send(renderProposal(p, event), keyboard([[
       { text: "✅ Lanzar", callback_data: encodeCallback("approve", p.id) },
@@ -69,7 +78,7 @@ export function createTelegramChannel(opts: { api: TelegramApi; chatId: number }
     async updateProposal(p, note) {
       if (p.telegramMessageId === null) { await send(note); return; }
       const rows = p.status === "failed" ? [[{ text: "🔁 Reintentar", callback_data: encodeCallback("retry", p.id) }]] : [];
-      await opts.api.editMessageText(opts.chatId, p.telegramMessageId, `${renderProposal(p, null)}\n\n${note}`, keyboard(rows));
+      await opts.api.editMessageText(opts.chatId, p.telegramMessageId, fitText(`${renderProposal(p, null)}\n\n${note}`), keyboard(rows));
     },
     sendEditMenu: (p) => send("¿Qué quieres cambiar?", keyboard([[
       { text: "📝 Petición", callback_data: encodeCallback("edit_request", p.id) },

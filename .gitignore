@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.db
+*.db-*
+.DS_Store
+
+# ~/.gitignore_global ignora "docs"; en este repo sí se publica
+!docs/

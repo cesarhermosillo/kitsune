@@ -127,3 +127,22 @@ test("I5: todo texto saliente se acota a 4000 caracteres con …", async () => {
   await channel.sendNotice("corto");
   assert.equal(sent.at(-1)!.args[1], "corto");
 });
+
+/** fetch falso que nunca responde hasta que se aborta su señal (o tarda `delayMs` si se da). */
+function slowFetch(delayMs = Infinity, body: unknown = {}) {
+  return (async (_url: string | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+    const signal = init?.signal;
+    if (!signal) { reject(new Error("sin signal")); return; }
+    const timer = Number.isFinite(delayMs) ? setTimeout(() => resolve(new Response(JSON.stringify(body), { status: 200 })), delayMs) : undefined;
+    signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); });
+  })) as typeof fetch;
+}
+
+test("I7: Telegram colgado se corta; getUpdates espera el long-poll más un margen", async () => {
+  const hung = createTelegramApi({ token: "123:abc", fetch: slowFetch(), timeoutMs: 20, longPollGraceMs: 20 });
+  await assert.rejects(() => hung.sendMessage(42, "hola"), /Telegram sendMessage/);
+  await assert.rejects(() => hung.getUpdates(0, 0), /Telegram getUpdates/);
+  const slow = createTelegramApi({ token: "123:abc", fetch: slowFetch(80, { ok: true, result: [] }), timeoutMs: 20, longPollGraceMs: 1000 });
+  await assert.rejects(() => slow.answerCallbackQuery("x"), /Telegram answerCallbackQuery/);
+  assert.deepEqual(await slow.getUpdates(0, 0), []);
+});

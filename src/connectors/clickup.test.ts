@@ -104,3 +104,18 @@ test("acota el cuerpo a 4000 caracteres", async () => {
   const { events } = await connector.poll(0);
   assert.equal(events[0].body.length, 4000);
 });
+
+/** fetch falso que nunca responde hasta que se aborta su señal (o tarda `delayMs` si se da). */
+function slowFetch(delayMs = Infinity, body: unknown = {}) {
+  return (async (_url: string | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+    const signal = init?.signal;
+    if (!signal) { reject(new Error("sin signal")); return; }
+    const timer = Number.isFinite(delayMs) ? setTimeout(() => resolve(new Response(JSON.stringify(body), { status: 200 })), delayMs) : undefined;
+    signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); });
+  })) as typeof fetch;
+}
+
+test("I7: un ClickUp colgado se corta con ClickUpError status 0", async () => {
+  const connector = createClickUpConnector({ token: "pk_test", listIds: ["901"], now: () => 0, fetch: slowFetch(), timeoutMs: 20 });
+  await assert.rejects(() => connector.poll(0), (e: unknown) => e instanceof ClickUpError && e.status === 0);
+});

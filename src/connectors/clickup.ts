@@ -16,13 +16,22 @@ interface CuTask {
 }
 interface CuComment { id: string; comment_text?: string; comment?: Array<{ type?: string; text?: string; user?: CuUser }>; user?: CuUser; date: string }
 
-export function createClickUpConnector(opts: { token: string; listIds: string[]; fetch: Fetch; now: () => number }): ClickUpConnector {
+export function createClickUpConnector(opts: { token: string; listIds: string[]; fetch: Fetch; now: () => number; timeoutMs?: number }): ClickUpConnector {
   let me: number | null = null;
+  const timeoutMs = opts.timeoutMs ?? 30_000;
 
   async function get<T>(path: string): Promise<T> {
-    const response = await opts.fetch(`${API}${path}`, { headers: { Authorization: opts.token } });
-    if (!response.ok) throw new ClickUpError(response.status, `ClickUp respondió ${response.status} en ${path.split("?")[0]}`);
-    return (await response.json()) as T;
+    const where = path.split("?")[0];
+    // Errores de red y timeouts salen como ClickUpError con status 0.
+    const network = (error: unknown) => new ClickUpError(0, error instanceof Error && error.name === "TimeoutError"
+      ? `ClickUp no respondió en ${timeoutMs / 1000} s en ${where}`
+      : `ClickUp no responde en ${where}: ${error instanceof Error ? error.message : "error de red"}`);
+    const signal = AbortSignal.timeout(timeoutMs);
+    let response: Response;
+    try { response = await opts.fetch(`${API}${path}`, { headers: { Authorization: opts.token }, signal }); }
+    catch (error) { throw network(error); }
+    if (!response.ok) throw new ClickUpError(response.status, `ClickUp respondió ${response.status} en ${where}`);
+    try { return (await response.json()) as T; } catch (error) { throw network(error); }
   }
 
   async function myId(): Promise<number> {

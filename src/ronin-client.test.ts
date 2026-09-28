@@ -57,3 +57,25 @@ test("HTTP 401, error JSON-RPC y red caída", async () => {
   const down = createRoninClient({ url: "http://localhost:8787", token: "cap", fetch: (async () => { throw new TypeError("fetch failed"); }) as typeof fetch });
   await assert.rejects(() => down.catalog(), (e: unknown) => e instanceof RoninError && e.code === "UNREACHABLE");
 });
+
+/** fetch falso que nunca responde hasta que se aborta su señal (o tarda `delayMs` si se da). */
+function slowFetch(delayMs = Infinity, body: unknown = {}) {
+  return (async (_url: string | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+    const signal = init?.signal;
+    if (!signal) { reject(new Error("sin signal")); return; }
+    const timer = Number.isFinite(delayMs) ? setTimeout(() => resolve(new Response(JSON.stringify(body), { status: 200 })), delayMs) : undefined;
+    signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); });
+  })) as typeof fetch;
+}
+
+test("I7: un Ronin colgado se corta con RoninError TIMEOUT", async () => {
+  const client = createRoninClient({ url: "http://localhost:8787", token: "cap", fetch: slowFetch(), timeoutMs: 20 });
+  await assert.rejects(() => client.catalog(), (e: unknown) => e instanceof RoninError && e.code === "TIMEOUT");
+});
+
+test("I7: crear_sesion usa su propio timeout, más largo", async () => {
+  const reply = { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ name: "cowork-a" }) }] } };
+  const client = createRoninClient({ url: "http://localhost:8787", token: "cap", fetch: slowFetch(80, reply), timeoutMs: 20, createTimeoutMs: 1000 });
+  await assert.rejects(() => client.catalog(), (e: unknown) => e instanceof RoninError && e.code === "TIMEOUT");
+  assert.deepEqual(await client.createSession({ repo: "r", workflowId: "w", request: "x", origen: "o" }), { name: "cowork-a" });
+});

@@ -17,6 +17,8 @@ export function createTelegramApi(opts: {
 }): TelegramApi {
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const graceMs = opts.longPollGraceMs ?? 15_000;
+  // La URL lleva el token: ningún mensaje de error puede incluirlo.
+  const fail = (method: string, reason: string) => new Error(`Telegram ${method}: ${reason.split(opts.token).join("[redactado]")}`);
   async function call<T>(method: string, body: Record<string, unknown>, ms = timeoutMs): Promise<T> {
     const signal = AbortSignal.timeout(ms);
     let data: { ok: boolean; result?: T; description?: string };
@@ -30,9 +32,9 @@ export function createTelegramApi(opts: {
     } catch (error) {
       const reason = error instanceof Error && error.name === "TimeoutError" ? `sin respuesta en ${ms / 1000} s`
         : error instanceof Error ? error.message : "error de red";
-      throw new Error(`Telegram ${method}: ${reason}`);
+      throw fail(method, reason);
     }
-    if (!data.ok) throw new Error(`Telegram ${method}: ${data.description ?? status}`);
+    if (!data.ok) throw fail(method, String(data.description ?? status));
     return data.result as T;
   }
   return {

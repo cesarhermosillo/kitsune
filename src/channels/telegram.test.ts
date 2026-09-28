@@ -146,3 +146,13 @@ test("I7: Telegram colgado se corta; getUpdates espera el long-poll más un marg
   await assert.rejects(() => slow.answerCallbackQuery("x"), /Telegram answerCallbackQuery/);
   assert.deepEqual(await slow.getUpdates(0, 0), []);
 });
+
+test("m3: los errores de telegram-api nunca incluyen el token", async () => {
+  const token = "123456:SECRETO-bot";
+  const api = createTelegramApi({ token, fetch: (async (url: string | URL) => {
+    throw new TypeError(`fetch failed: getaddrinfo ENOTFOUND ${String(url)}`);
+  }) as typeof fetch });
+  await assert.rejects(() => api.sendMessage(42, "hola"), (e: unknown) => e instanceof Error && !e.message.includes(token) && /Telegram sendMessage/.test(e.message));
+  const echo = createTelegramApi({ token, fetch: (async () => new Response(JSON.stringify({ ok: false, description: `Unauthorized ${token}` }), { status: 401 })) as typeof fetch });
+  await assert.rejects(() => echo.getUpdates(0, 0), (e: unknown) => e instanceof Error && !e.message.includes(token));
+});

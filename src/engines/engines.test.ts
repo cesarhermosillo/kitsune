@@ -11,7 +11,10 @@ function recorder(result: { code?: number | null; stdout?: string; stderr?: stri
   };
   return { run, calls };
 }
-const deps = (run: RunProcess, files: Record<string, string> = {}) => ({ run, tmpDir: () => "/tmp/k1", readFile: (p: string) => { if (!(p in files)) throw new Error("ENOENT"); return files[p]; } });
+const deps = (run: RunProcess, files: Record<string, string> = {}, removed: string[] = []) => ({
+  run, tmpDir: () => "/tmp/k1", removeDir: (d: string) => { removed.push(d); },
+  readFile: (p: string) => { if (!(p in files)) throw new Error("ENOENT"); return files[p]; },
+});
 
 test("claude: sin herramientas, prompt por stdin, devuelve .result", async () => {
   const { run, calls } = recorder({ stdout: JSON.stringify({ result: "{\"action\":\"ignore\"}" }) });
@@ -50,4 +53,14 @@ test("runProcess real: captura stdout, stdin y timeout", async () => {
   assert.deepEqual({ code: echo.code, stdout: echo.stdout, timedOut: echo.timedOut }, { code: 0, stdout: "eco", timedOut: false });
   const slow = await runProcess("sleep", ["5"], { timeoutMs: 100, cwd: process.cwd() });
   assert.equal(slow.timedOut, true);
+});
+
+test("m2: cada motor borra su directorio temporal, también si falla", async () => {
+  for (const name of ["claude", "codex", "agy"] as const) {
+    const removed: string[] = [];
+    const ok = name === "claude" ? JSON.stringify({ result: "r" }) : "r";
+    await createEngine(name, deps(recorder({ stdout: ok }).run, { "/tmp/k1/last.txt": "r" }, removed)).complete("p", { timeoutMs: 1 });
+    await assert.rejects(() => createEngine(name, deps(recorder({ code: 1, stderr: "boom" }).run, {}, removed)).complete("p", { timeoutMs: 1 }), EngineError);
+    assert.deepEqual(removed, ["/tmp/k1", "/tmp/k1"], name);
+  }
 });

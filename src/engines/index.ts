@@ -5,7 +5,15 @@ import { EngineError, type Engine, type ProcessResult, type RunProcess } from ".
 interface EngineDeps {
   run: RunProcess;
   tmpDir: () => string;
+  /** Borra el directorio temporal de la llamada (siempre, en finally). */
+  removeDir: (dir: string) => void;
   readFile: (path: string) => string;
+}
+
+/** Crea un directorio temporal para una llamada y lo borra al terminar, falle o no. */
+async function withTmpDir<T>(deps: EngineDeps, fn: (dir: string) => Promise<T>): Promise<T> {
+  const dir = deps.tmpDir();
+  try { return await fn(dir); } finally { deps.removeDir(dir); }
 }
 
 function check(engine: string, result: ProcessResult): void {
@@ -19,11 +27,11 @@ export function createEngine(name: EngineName, deps: EngineDeps): Engine {
     return {
       name,
       async complete(prompt, { timeoutMs }) {
-        const result = await deps.run(
+        const result = await withTmpDir(deps, (cwd) => deps.run(
           "claude",
           ["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--no-session-persistence"],
-          { timeoutMs, cwd: deps.tmpDir(), stdin: prompt }
-        );
+          { timeoutMs, cwd, stdin: prompt }
+        ));
         check(name, result);
         let parsed: { result?: unknown; is_error?: boolean };
         try {
@@ -41,8 +49,7 @@ export function createEngine(name: EngineName, deps: EngineDeps): Engine {
   if (name === "codex") {
     return {
       name,
-      async complete(prompt, { timeoutMs }) {
-        const dir = deps.tmpDir();
+      complete: (prompt, { timeoutMs }) => withTmpDir(deps, async (dir) => {
         const out = join(dir, "last.txt");
         // Codex no tiene un modo "sin herramientas" verificable: se apagan las herramientas de
         // shell (`--disable shell_tool`, `--disable unified_exec`, ver `codex features list`) y se
@@ -57,15 +64,15 @@ export function createEngine(name: EngineName, deps: EngineDeps): Engine {
         } catch {
           throw new EngineError(name, "no escribió el último mensaje");
         }
-      },
+      }),
     };
   }
   return {
     name,
     async complete(prompt, { timeoutMs }) {
-      const result = await deps.run("agy", ["-p", prompt, "--output-format", "text", "--sandbox"],
-        { timeoutMs, cwd: deps.tmpDir() }
-      );
+      const result = await withTmpDir(deps, (cwd) => deps.run("agy", ["-p", prompt, "--output-format", "text", "--sandbox"],
+        { timeoutMs, cwd }
+      ));
       check(name, result);
       return result.stdout.trim();
     },

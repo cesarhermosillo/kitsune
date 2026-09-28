@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as nodeSleep } from "node:timers/promises";
@@ -34,7 +34,10 @@ function build(dir: string) {
   const secretList = [secrets.clickupToken, secrets.telegramBotToken, secrets.roninCapabilityToken];
   mkdirSync(dir, { recursive: true });
   const store = openStore(join(dir, "kitsune.db"));
-  const engine = createEngine(config.engine, { run: runProcess, tmpDir: () => mkdtempSync(join(tmpdir(), "kitsune-engine-")), readFile: (p) => readFileSync(p, "utf8") });
+  const engine = createEngine(config.engine, {
+    run: runProcess, tmpDir: () => mkdtempSync(join(tmpdir(), "kitsune-engine-")),
+    removeDir: (d) => rmSync(d, { recursive: true, force: true }), readFile: (p) => readFileSync(p, "utf8"),
+  });
   const api = createTelegramApi({ token: secrets.telegramBotToken, fetch });
   const channel = createTelegramChannel({ api, chatId: config.telegram.chatId });
   const ronin = createRoninClient({ url: config.ronin.url, token: secrets.roninCapabilityToken, fetch });

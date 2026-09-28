@@ -1,0 +1,21 @@
+{
+  "name": "kitsune",
+  "version": "0.1.0",
+  "description": "Personal agent that turns your inbox into approved Ronin sessions via Telegram",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.13" },
+  "bin": { "kitsune": "dist/cli.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "tsx src/cli.ts start",
+    "doctor": "tsx src/cli.ts doctor",
+    "test": "node --import tsx --test 'src/**/*.test.ts'",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

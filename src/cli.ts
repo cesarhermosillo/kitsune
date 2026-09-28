@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as nodeSleep } from "node:timers/promises";
@@ -32,8 +32,11 @@ async function sleep(ms: number, signal: AbortSignal): Promise<void> {
 function build(dir: string) {
   const { config, secrets } = loadConfig(dir);
   const secretList = [secrets.clickupToken, secrets.telegramBotToken, secrets.roninCapabilityToken];
-  mkdirSync(dir, { recursive: true });
-  const store = openStore(join(dir, "kitsune.db"));
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const dbPath = join(dir, "kitsune.db");
+  const store = openStore(dbPath);
+  // La base guarda auditoría y contenido de ClickUp: solo el dueño la lee (también -wal/-shm).
+  for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) if (existsSync(file)) chmodSync(file, 0o600);
   const engine = createEngine(config.engine, {
     run: runProcess, tmpDir: () => mkdtempSync(join(tmpdir(), "kitsune-engine-")),
     removeDir: (d) => rmSync(d, { recursive: true, force: true }), readFile: (p) => readFileSync(p, "utf8"),

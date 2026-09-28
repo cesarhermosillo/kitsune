@@ -3,10 +3,10 @@ import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as nodeSleep } from "node:timers/promises";
-import { createKitsuneApp } from "./app.js";
+import { createKitsuneApp, processUpdates } from "./app.js";
 import { createBrain } from "./brain.js";
 import { createTelegramApi } from "./channels/telegram-api.js";
-import { createTelegramChannel, parseUpdate } from "./channels/telegram.js";
+import { createTelegramChannel } from "./channels/telegram.js";
 import { ConfigError, defaultConfigDir, loadConfig } from "./config.js";
 import { createClickUpConnector } from "./connectors/clickup.js";
 import { startLoops } from "./daemon.js";
@@ -40,13 +40,15 @@ function build(dir: string) {
   const clickup = createClickUpConnector({ token: secrets.clickupToken, listIds: config.clickup.listIds, fetch, now: Date.now });
   const app = createKitsuneApp({
     store, brain: createBrain(engine, { timeoutMs: config.engineTimeoutSec * 1000 }), ronin, channel,
-    policy: createPolicy({ chatId: config.telegram.chatId }), now: Date.now, ttlMs: config.proposals.ttlHours * 3_600_000,
+    policy: createPolicy({ chatId: config.telegram.chatId }), now: Date.now, ttlMs: config.proposals.ttlHours * 3_600_000, log,
   });
   return { config, store, engine, api, channel, ronin, clickup, app, watcher: createWatcher({ store, ronin, channel }) };
 }
 
 async function start(dir: string) {
   const k = build(dir);
+  const interrupted = await k.app.recoverInterrupted();
+  if (interrupted > 0) log(`${interrupted} propuesta(s) interrumpida(s) marcadas como fallidas`);
   log(`Kitsune listo · motor ${k.config.engine} · Ronin ${k.config.ronin.url}`);
   const handle = startLoops([
     {
@@ -63,15 +65,12 @@ async function start(dir: string) {
       // Long polling (`timeout: 30`): cada llamada a getUpdates puede tardar hasta 30 s
       // antes de resolver; intervalMs: 1000 solo separa ciclos consecutivos, no limita esta espera.
       // Sin onAlert: si el propio canal de Telegram falla no hay por dónde avisar al usuario.
+      // processUpdates aísla cada update y siempre avanza el offset (a lo más una vez).
       name: "telegram", intervalMs: 1000,
       run: async () => {
         const offset = Number(k.store.getCursor("telegram") ?? 0);
         const updates = await k.api.getUpdates(offset, 30);
-        for (const update of updates) {
-          const event = parseUpdate(update);
-          if (event) await k.app.onChannelEvent(event);
-          k.store.setCursor("telegram", String(update.update_id + 1));
-        }
+        await processUpdates(updates, { app: k.app, store: k.store, log, now: Date.now });
       },
     },
     {

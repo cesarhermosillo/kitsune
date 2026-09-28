@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createKitsuneApp } from "./app.js";
+import { createKitsuneApp, processUpdates, type KitsuneApp } from "./app.js";
 import { TriageError, type Brain } from "./brain.js";
 import type { Channel } from "./channels/telegram.js";
 import { createPolicy } from "./policy.js";
@@ -16,7 +16,7 @@ const EVENT: InboxEvent = {
 };
 const PROPOSE: Triage = { action: "propose_session", repo: "todo-api", workflow: "plan-tdd-evidencia", request: "Valida títulos", reason: "claro" };
 
-function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name: string }>; now?: number } = {}) {
+function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name: string }>; now?: number; channel?: Partial<Channel>; reply?: () => Promise<void> } = {}) {
   const store = openStore(":memory:");
   const log: string[] = [];
   let clock = opts.now ?? 1_000;
@@ -30,13 +30,14 @@ function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name:
     sendNotice: async (text) => { log.push(`notice:${text}`); return ++msg; },
     sendQuestion: async () => ++msg,
     ackCallback: async (_id, text) => { log.push(`ack:${text ?? ""}`); },
+    ...opts.channel,
   };
   const launches: unknown[] = [];
   const ronin: RoninClient = {
     catalog: async () => CATALOG,
     createSession: async (input) => { launches.push(input); return opts.launch ? opts.launch() : { name: "cowork-valida" }; },
     sessionStatus: async () => [],
-    replySession: async () => {},
+    replySession: opts.reply ?? (async () => {}),
   };
   const brain: Brain = { triage: async () => { if (opts.triage instanceof Error) throw opts.triage; return opts.triage ?? PROPOSE; } };
   const app = createKitsuneApp({ store, brain, ronin, channel, policy: createPolicy({ chatId: 42 }), now: () => clock, ttlMs: 60_000 });
@@ -208,4 +209,104 @@ test("respuesta a una pregunta de sesión se reenvía a Ronin", async () => {
   await h.app.onChannelEvent({ type: "message", chatId: 42, messageId: 301, text: "sí, sigue", replyToMessageId: 300 });
   assert.deepEqual(replies, [["cowork-valida", "sí, sigue"]]);
   assert.ok(h.log.includes("notice:📨 Enviado a cowork-valida"));
+});
+
+test("C1: ✅ viejo (ack lanza 'query is too old') igual lanza una sola vez", async () => {
+  const h = harness({ channel: { ackCallback: async () => { throw new Error("Telegram answerCallbackQuery: Bad Request: query is too old"); } } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(cb("approve", p.id));
+  assert.equal(h.launches.length, 1);
+  assert.equal(h.store.getProposal(p.id)?.status, "launched");
+  await h.app.onChannelEvent(cb("approve", p.id));
+  assert.equal(h.launches.length, 1);
+});
+
+test("C1: 🔁 con Ronin caído y edición 'message is not modified' deja failed y no lanza", async () => {
+  const h = harness({
+    launch: async () => { throw new RoninError("UNREACHABLE", "Ronin no responde"); },
+    channel: { updateProposal: async () => { throw new Error("Telegram editMessageText: Bad Request: message is not modified"); } },
+  });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(cb("approve", p.id));
+  assert.equal(h.store.getProposal(p.id)?.status, "failed");
+  await h.app.onChannelEvent(cb("retry", p.id));
+  assert.equal(h.store.getProposal(p.id)?.status, "failed");
+  assert.equal(h.launches.length, 2);
+});
+
+test("C1: una edición fallida tras lanzar no cambia el estado ni lanza", async () => {
+  const h = harness({ channel: { updateProposal: async () => { throw new Error("Telegram editMessageText: boom"); } } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(cb("approve", p.id));
+  assert.equal(h.store.getProposal(p.id)?.status, "launched");
+  assert.deepEqual(h.store.listActiveSessions().map((s) => s.name), ["cowork-valida"]);
+});
+
+test("C1: el ack se hace antes de cambiar el estado", async () => {
+  let statusAtAck: string | undefined;
+  const h = harness();
+  const ref: { id?: string } = {};
+  (h as any).app = createKitsuneApp({
+    store: h.store, brain: { triage: async () => PROPOSE }, now: () => 1, ttlMs: 60_000, policy: createPolicy({ chatId: 42 }),
+    ronin: { catalog: async () => CATALOG, createSession: async () => ({ name: "cowork-x" }), sessionStatus: async () => [], replySession: async () => {} },
+    channel: {
+      sendProposal: async () => 1, updateProposal: async () => {}, sendNotice: async () => 1,
+      ackCallback: async () => { statusAtAck = h.store.getProposal(ref.id!)?.status; },
+    } as unknown as Channel,
+  });
+  await h.app.onInboxEvent(EVENT);
+  ref.id = h.store.listPending()[0].id;
+  await h.app.onChannelEvent(cb("approve", ref.id));
+  assert.equal(statusAtAck, "pending");
+});
+
+test("C1: al arrancar, las propuestas en approved pasan a failed (interrumpida) con 🔁", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  h.store.transition(p.id, "approved", 2);
+  assert.equal(await h.app.recoverInterrupted(), 1);
+  const after = h.store.getProposal(p.id)!;
+  assert.equal(after.status, "failed");
+  assert.equal(after.error, "interrumpida");
+  assert.ok(h.log.some((l) => l.startsWith("update:failed:")));
+  await h.app.onChannelEvent(cb("retry", p.id));
+  assert.equal(h.store.getProposal(p.id)?.status, "launched");
+});
+
+test("C1: un mensaje de un chat ajeno se ignora y se audita", async () => {
+  const h = harness();
+  await h.app.onChannelEvent({ type: "message", chatId: 666, messageId: 1, text: "hola" });
+  assert.deepEqual(h.log, []);
+  const [row] = h.store.listAudit(1);
+  assert.deepEqual([row.action, row.target, row.detail], ["unauthorized", "666", { type: "message" }]);
+});
+
+test("C1: si responder a la sesión falla se envía el aviso ⚠️", async () => {
+  const h = harness({ reply: async () => { throw new RoninError("SESSION_NOT_WAITING", "la sesión no está esperando una respuesta"); } });
+  h.store.saveEvent(EVENT, 1);
+  const p = h.store.createProposal({ eventId: EVENT.id, repo: "todo-api", workflowId: "wf-1", workflowName: "plan-tdd-evidencia", request: "x", origin: "clickup:t1" }, 1);
+  h.store.trackSession("cowork-valida", p.id);
+  h.store.updateSession("cowork-valida", { questionMessageId: 300 });
+  await h.app.onChannelEvent({ type: "message", chatId: 42, messageId: 301, text: "sí", replyToMessageId: 300 });
+  assert.ok(h.log.includes("notice:⚠️ No pude responder a cowork-valida: la sesión no está esperando una respuesta"));
+});
+
+test("C1: processUpdates avanza el offset aunque un update falle y lo audita", async () => {
+  const store = openStore(":memory:");
+  const handled: number[] = [];
+  const app = {
+    onChannelEvent: async (e: { messageId?: number }) => { if (e.messageId === 1) throw new Error("boom"); handled.push(e.messageId!); },
+  } as unknown as KitsuneApp;
+  const lines: string[] = [];
+  const msg = (id: number) => ({ update_id: 10 + id, message: { message_id: id, chat: { id: 42 }, text: "x" } });
+  await processUpdates([msg(1), msg(2)], { app, store, log: (l) => lines.push(l), now: () => 5 });
+  assert.equal(store.getCursor("telegram"), "13");
+  assert.deepEqual(handled, [2]);
+  const audit = store.listAudit(10).find((a) => a.action === "update_failed");
+  assert.deepEqual([audit?.actor, audit?.target, audit?.detail], ["kitsune", "11", { error: "boom" }]);
+  assert.ok(lines.some((l) => l.includes("boom")));
 });

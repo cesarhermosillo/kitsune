@@ -1,105 +1,148 @@
 import { TriageError, type Brain } from "./brain.js";
-import type { Channel, ChannelEvent } from "./channels/telegram.js";
+import { parseUpdate, type Channel, type ChannelEvent } from "./channels/telegram.js";
+import type { TgUpdate } from "./channels/telegram-api.js";
 import type { Policy } from "./policy.js";
 import { InvalidTransition } from "./proposals.js";
 import type { RoninClient } from "./ronin-client.js";
 import type { Store } from "./store.js";
 import type { Catalog, InboxEvent, Proposal, Triage } from "./types.js";
 
-export interface AppDeps { store: Store; brain: Brain; ronin: RoninClient; channel: Channel; policy: Policy; now: () => number; ttlMs: number }
+export interface AppDeps {
+  store: Store; brain: Brain; ronin: RoninClient; channel: Channel; policy: Policy; now: () => number; ttlMs: number;
+  log?: (line: string) => void;
+}
 export interface KitsuneApp {
   onInboxEvent(event: InboxEvent): Promise<void>;
   onChannelEvent(event: ChannelEvent): Promise<void>;
   sweepExpired(): Promise<number>;
+  /** Al arrancar: las propuestas que quedaron en `approved` (el daemon murió a medio lanzar) pasan a `failed`. */
+  recoverInterrupted(): Promise<number>;
 }
 
 const clip = (text: string, max = 500) => (text.length > max ? `${text.slice(0, max)}…` : text);
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/**
+ * Procesa un lote de getUpdates. Cada update se maneja por separado y el offset
+ * SIEMPRE avanza, falle o no: las acciones del usuario son a lo más una vez
+ * (un update envenenado no puede bloquear el canal para siempre).
+ */
+export async function processUpdates(
+  updates: TgUpdate[],
+  deps: { app: KitsuneApp; store: Store; log: (line: string) => void; now: () => number },
+): Promise<void> {
+  for (const update of updates) {
+    try {
+      const event = parseUpdate(update);
+      if (event) await deps.app.onChannelEvent(event);
+    } catch (error) {
+      deps.log(`[telegram] update ${update.update_id} falló: ${errorText(error)}`);
+      deps.store.audit("kitsune", "update_failed", String(update.update_id), { error: errorText(error) }, deps.now());
+    }
+    deps.store.setCursor("telegram", String(update.update_id + 1));
+  }
+}
+
 export function createKitsuneApp(deps: AppDeps): KitsuneApp {
   const { store, channel } = deps;
+  const log = deps.log ?? (() => {});
+
+  // Telegram es best-effort dentro de los flujos: un fallo al avisar o editar
+  // (p. ej. "message is not modified" o "query is too old") nunca cambia el
+  // estado de una propuesta ni escapa del handler.
+  async function ack(callbackId: string, text?: string): Promise<void> {
+    try { await channel.ackCallback(callbackId, text); } catch (error) { log(`[telegram] ack falló: ${errorText(error)}`); }
+  }
+  async function edit(p: Proposal, note: string): Promise<void> {
+    try { await channel.updateProposal(p, note); } catch (error) { log(`[telegram] no se pudo editar ${p.id}: ${errorText(error)}`); }
+  }
+  async function notice(text: string): Promise<void> {
+    try { await channel.sendNotice(text); } catch (error) { log(`[telegram] no se pudo avisar: ${errorText(error)}`); }
+  }
 
   async function launch(p: Proposal): Promise<void> {
+    let session: { name: string };
     try {
-      const session = await deps.ronin.createSession({ repo: p.repo, workflowId: p.workflowId, request: p.request, origen: p.origin });
-      const launched = store.transition(p.id, "launched", deps.now(), { sessionName: session.name, error: null });
-      store.trackSession(session.name, p.id);
-      store.audit("ronin", "session_created", p.id, { session: session.name }, deps.now());
-      await channel.updateProposal(launched, `✅ Sesión ${session.name} creada`);
+      session = await deps.ronin.createSession({ repo: p.repo, workflowId: p.workflowId, request: p.request, origen: p.origin });
     } catch (error) {
       const failed = store.transition(p.id, "failed", deps.now(), { error: errorText(error) });
       store.audit("ronin", "launch_failed", p.id, { error: errorText(error) }, deps.now());
-      await channel.updateProposal(failed, `⚠️ No se pudo lanzar: ${errorText(error)}`);
+      await edit(failed, `⚠️ No se pudo lanzar: ${errorText(error)}`);
+      return;
     }
+    const launched = store.transition(p.id, "launched", deps.now(), { sessionName: session.name, error: null });
+    store.trackSession(session.name, p.id);
+    store.audit("ronin", "session_created", p.id, { session: session.name }, deps.now());
+    await edit(launched, `✅ Sesión ${session.name} creada`);
   }
 
   /** Tras editar, se envía un mensaje nuevo; el encabezado usa p.origin porque el evento ya no está en memoria. */
   async function repropose(p: Proposal): Promise<void> {
-    store.setMessageId(p.id, await channel.sendProposal(p, null));
+    try { store.setMessageId(p.id, await channel.sendProposal(p, null)); }
+    catch (error) { log(`[telegram] no se pudo reenviar ${p.id}: ${errorText(error)}`); }
   }
+
+  /** Verifica el estado ANTES del ack, para que el ack vaya antes de cualquier cambio de estado. */
+  const expect = (p: Proposal, status: Proposal["status"]) => { if (p.status !== status) throw new InvalidTransition(p.status, status); };
 
   async function onCallback(event: Extract<ChannelEvent, { type: "callback" }>): Promise<void> {
     const p = store.getProposal(event.proposalId);
-    if (!p) { await channel.ackCallback(event.callbackId, "No existe"); return; }
+    if (!p) { await ack(event.callbackId, "No existe"); return; }
     store.audit("user", event.action, p.id, { index: event.index ?? null }, deps.now());
     try {
       switch (event.action) {
-        case "approve": {
-          const approved = store.transition(p.id, "approved", deps.now(), undefined, "pending");
-          await channel.ackCallback(event.callbackId, "Lanzando…");
-          await launch(approved);
-          return;
-        }
+        case "approve":
         case "retry": {
-          const approved = store.transition(p.id, "approved", deps.now(), undefined, "failed");
-          await channel.ackCallback(event.callbackId, "Lanzando…");
-          await launch(approved);
+          const from = event.action === "approve" ? "pending" : "failed";
+          expect(p, from);
+          await ack(event.callbackId, "Lanzando…");
+          await launch(store.transition(p.id, "approved", deps.now(), undefined, from));
           return;
         }
         case "reject": {
-          const rejected = store.transition(p.id, "rejected", deps.now());
-          await channel.ackCallback(event.callbackId, "Ignorada");
-          await channel.updateProposal(rejected, "❌ Ignorada");
+          expect(p, "pending");
+          await ack(event.callbackId, "Ignorada");
+          await edit(store.transition(p.id, "rejected", deps.now(), undefined, "pending"), "❌ Ignorada");
           return;
         }
         case "edit": {
-          if (p.status !== "pending") throw new InvalidTransition(p.status, "pending");
-          await channel.ackCallback(event.callbackId);
+          expect(p, "pending");
+          await ack(event.callbackId);
           await channel.sendEditMenu(p);
           return;
         }
         case "edit_request": {
-          if (p.status !== "pending") throw new InvalidTransition(p.status, "pending");
-          await channel.ackCallback(event.callbackId);
+          expect(p, "pending");
+          await ack(event.callbackId);
           store.setPendingEdit(await channel.askForRequest(p), p.id);
           return;
         }
         case "edit_repo":
         case "edit_workflow": {
-          if (p.status !== "pending") throw new InvalidTransition(p.status, "pending");
+          expect(p, "pending");
           const catalog = await deps.ronin.catalog();
-          await channel.ackCallback(event.callbackId);
+          await ack(event.callbackId);
           await channel.sendChoices(p, event.action === "edit_repo" ? "repo" : "workflow",
             event.action === "edit_repo" ? catalog.repos : catalog.workflows.map((w) => w.name));
           return;
         }
         case "set_repo":
         case "set_workflow": {
+          expect(p, "pending");
           const catalog = await deps.ronin.catalog();
           const index = event.index ?? -1;
           const patch = event.action === "set_repo"
             ? (catalog.repos[index] !== undefined ? { repo: catalog.repos[index] } : null)
             : (catalog.workflows[index] ? { workflowId: catalog.workflows[index].id, workflowName: catalog.workflows[index].name } : null);
-          if (!patch) { await channel.ackCallback(event.callbackId, "Opción inválida"); return; }
-          const updated = store.updatePending(p.id, patch, deps.now());
-          await channel.ackCallback(event.callbackId, "Actualizada");
-          await repropose(updated);
+          if (!patch) { await ack(event.callbackId, "Opción inválida"); return; }
+          await ack(event.callbackId, "Actualizada");
+          await repropose(store.updatePending(p.id, patch, deps.now()));
           return;
         }
       }
     } catch (error) {
       if (error instanceof InvalidTransition) {
-        await channel.ackCallback(event.callbackId, p.status === "expired" ? "Expirada" : "Ya no está vigente");
+        await ack(event.callbackId, p.status === "expired" ? "Expirada" : "Ya no está vigente");
         return;
       }
       throw error;
@@ -116,7 +159,7 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
           await repropose(updated);
         } catch (error) {
           if (!(error instanceof InvalidTransition)) throw error;
-          await channel.sendNotice("Esa propuesta ya no está vigente.");
+          await notice("Esa propuesta ya no está vigente.");
         }
         return;
       }
@@ -125,14 +168,15 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
         store.audit("user", "reply_session", session.name, {}, deps.now());
         try {
           await deps.ronin.replySession(session.name, event.text);
-          await channel.sendNotice(`📨 Enviado a ${session.name}`);
         } catch (error) {
-          await channel.sendNotice(`⚠️ No pude responder a ${session.name}: ${errorText(error)}`);
+          await notice(`⚠️ No pude responder a ${session.name}: ${errorText(error)}`);
+          return;
         }
+        await notice(`📨 Enviado a ${session.name}`);
         return;
       }
     }
-    await channel.sendNotice("Usa los botones de las propuestas, o responde a una pregunta de sesión.");
+    await notice("Usa los botones de las propuestas, o responde a una pregunta de sesión.");
   }
 
   return {
@@ -181,10 +225,18 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
       for (const p of store.listPending()) {
         if (deps.now() - p.createdAt <= deps.ttlMs) continue;
         const expired = store.transition(p.id, "expired", deps.now());
-        await channel.updateProposal(expired, "⌛ Expirada");
+        await edit(expired, "⌛ Expirada");
         count++;
       }
       return count;
+    },
+    async recoverInterrupted() {
+      const interrupted = store.failInterrupted(deps.now());
+      for (const p of interrupted) {
+        store.audit("kitsune", "launch_interrupted", p.id, {}, deps.now());
+        await edit(p, "⚠️ Lanzamiento interrumpido (Kitsune se reinició). Usa 🔁 para reintentar.");
+      }
+      return interrupted.length;
     },
   };
 }

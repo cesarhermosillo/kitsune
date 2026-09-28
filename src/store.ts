@@ -18,6 +18,8 @@ export interface Store {
   updatePending(id: string, patch: Partial<Pick<Proposal, "repo" | "workflowId" | "workflowName" | "request">>, now: number): Proposal;
   setMessageId(id: string, messageId: number): void;
   listPending(): Proposal[];
+  /** Pasa todas las propuestas en `approved` a `failed` con error "interrumpida" y las devuelve. */
+  failInterrupted(now: number): Proposal[];
   trackSession(name: string, proposalId: string): void;
   listActiveSessions(): TrackedSession[];
   updateSession(name: string, patch: Partial<Omit<TrackedSession, "name" | "proposalId">>): void;
@@ -120,6 +122,11 @@ export function openStore(path: string): Store {
     }),
     setMessageId: (id, messageId) => { db.prepare("UPDATE proposals SET telegram_message_id = ? WHERE id = ?").run(messageId, id); },
     listPending: () => (db.prepare("SELECT * FROM proposals WHERE status = 'pending' ORDER BY created_at").all() as Row[]).map(toProposal),
+    failInterrupted: (now) => inTx(() => {
+      const ids = (db.prepare("SELECT id FROM proposals WHERE status = 'approved' ORDER BY created_at").all() as Row[]).map((r) => String(r.id));
+      db.prepare("UPDATE proposals SET status = 'failed', error = 'interrumpida', updated_at = ? WHERE status = 'approved'").run(now);
+      return ids.map((id) => getProposal(id)!);
+    }),
     trackSession: (name, proposalId) => { db.prepare("INSERT OR REPLACE INTO sessions (name, proposal_id) VALUES (?, ?)").run(name, proposalId); },
     listActiveSessions: () => (db.prepare("SELECT * FROM sessions WHERE notified_done = 0 ORDER BY name").all() as Row[]).map(toSession),
     updateSession: (name, patch) => {

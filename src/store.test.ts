@@ -105,3 +105,16 @@ test("los datos sobreviven a reabrir la base", () => {
     b.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("failInterrupted pasa approved a failed con error 'interrumpida' y no toca las demás", () => {
+  const store = openStore(":memory:");
+  store.saveEvent(EVENT, 1);
+  const a = store.createProposal(NEW, 10);
+  const b = store.createProposal(NEW, 11);
+  store.transition(a.id, "approved", 12);
+  const out = store.failInterrupted(50);
+  assert.deepEqual(out.map((p) => [p.id, p.status, p.error, p.updatedAt]), [[a.id, "failed", "interrumpida", 50]]);
+  assert.equal(store.getProposal(b.id)?.status, "pending");
+  assert.equal(store.transition(a.id, "approved", 51, undefined, "failed").status, "approved");
+  store.close();
+});

@@ -14,7 +14,7 @@ export interface Store {
   setTriage(id: string, triage: Triage | null, status: "done" | "failed"): void;
   createProposal(input: NewProposal, now: number): Proposal;
   getProposal(id: string): Proposal | null;
-  transition(id: string, to: ProposalStatus, now: number, patch?: { sessionName?: string; error?: string | null }): Proposal;
+  transition(id: string, to: ProposalStatus, now: number, patch?: { sessionName?: string; error?: string | null }, from?: ProposalStatus): Proposal;
   updatePending(id: string, patch: Partial<Pick<Proposal, "repo" | "workflowId" | "workflowName" | "request">>, now: number): Proposal;
   setMessageId(id: string, messageId: number): void;
   listPending(): Proposal[];
@@ -100,9 +100,10 @@ export function openStore(path: string): Store {
       return getProposal(id)!;
     },
     getProposal,
-    transition: (id, to, now, patch = {}) => inTx(() => {
+    transition: (id, to, now, patch = {}, from) => inTx(() => {
       const current = getProposal(id);
       if (!current) throw new Error(`propuesta desconocida: ${id}`);
+      if (from !== undefined && current.status !== from) throw new InvalidTransition(current.status, to);
       if (!canTransition(current.status, to)) throw new InvalidTransition(current.status, to);
       db.prepare("UPDATE proposals SET status = ?, updated_at = ?, session_name = COALESCE(?, session_name), error = ? WHERE id = ?")
         .run(to, now, patch.sessionName ?? null, patch.error === undefined ? current.error : patch.error, id);

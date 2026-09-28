@@ -44,9 +44,14 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
     store.audit("user", event.action, p.id, { index: event.index ?? null }, deps.now());
     try {
       switch (event.action) {
-        case "approve":
+        case "approve": {
+          const approved = store.transition(p.id, "approved", deps.now(), undefined, "pending");
+          await channel.ackCallback(event.callbackId, "Lanzando…");
+          await launch(approved);
+          return;
+        }
         case "retry": {
-          const approved = store.transition(p.id, "approved", deps.now());
+          const approved = store.transition(p.id, "approved", deps.now(), undefined, "failed");
           await channel.ackCallback(event.callbackId, "Lanzando…");
           await launch(approved);
           return;
@@ -93,7 +98,10 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
         }
       }
     } catch (error) {
-      if (error instanceof InvalidTransition) { await channel.ackCallback(event.callbackId, "Ya no está vigente"); return; }
+      if (error instanceof InvalidTransition) {
+        await channel.ackCallback(event.callbackId, p.status === "expired" ? "Expirada" : "Ya no está vigente");
+        return;
+      }
       throw error;
     }
   }

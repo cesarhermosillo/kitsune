@@ -112,6 +112,29 @@ test("fallo de Ronin deja la propuesta failed y retry la relanza", async () => {
   assert.equal(h.store.getProposal(p.id)?.status, "launched");
 });
 
+test("approve tras fallo no relanza; solo retry puede", async () => {
+  let fail = true;
+  const h = harness({ launch: async () => { if (fail) throw new RoninError("UNREACHABLE", "Ronin no responde"); return { name: "cowork-valida" }; } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(cb("approve", p.id));
+  assert.equal(h.store.getProposal(p.id)?.status, "failed");
+  assert.equal(h.launches.length, 1);
+  await h.app.onChannelEvent(cb("approve", p.id));
+  assert.equal(h.launches.length, 1);
+  assert.ok(h.log.includes("ack:Ya no está vigente"));
+});
+
+test("retry en una propuesta pendiente no lanza nada", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(cb("retry", p.id));
+  assert.equal(h.launches.length, 0);
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+  assert.ok(h.log.includes("ack:Ya no está vigente"));
+});
+
 test("reject cierra la propuesta", async () => {
   const h = harness();
   await h.app.onInboxEvent(EVENT);
@@ -167,6 +190,7 @@ test("sweepExpired expira propuestas viejas y sus botones dejan de servir", asyn
   assert.equal(h.store.getProposal(p.id)?.status, "expired");
   await h.app.onChannelEvent(cb("approve", p.id));
   assert.equal(h.launches.length, 0);
+  assert.ok(h.log.includes("ack:Expirada"));
 });
 
 test("respuesta a una pregunta de sesión se reenvía a Ronin", async () => {

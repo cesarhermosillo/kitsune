@@ -38,6 +38,20 @@ test("propuestas: crear, transicionar y rechazar transiciones inválidas", () =>
   store.close();
 });
 
+test("transition con from esperado detecta carreras (transición no atómica)", () => {
+  const store = openStore(":memory:");
+  store.saveEvent(EVENT, 1);
+  const p = store.createProposal(NEW, 10);
+  assert.throws(() => store.transition(p.id, "approved", 20, undefined, "failed"), InvalidTransition);
+  const approved = store.transition(p.id, "approved", 21, undefined, "pending");
+  assert.equal(approved.status, "approved");
+  store.transition(p.id, "failed", 22, { error: "no responde" });
+  const retried = store.transition(p.id, "approved", 23, undefined, "failed");
+  assert.equal(retried.status, "approved");
+  assert.throws(() => store.transition(p.id, "approved", 24, undefined, "pending"), InvalidTransition);
+  store.close();
+});
+
 test("updatePending solo aplica a propuestas pendientes", () => {
   const store = openStore(":memory:");
   store.saveEvent(EVENT, 1);

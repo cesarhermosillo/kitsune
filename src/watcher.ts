@@ -21,6 +21,9 @@ export function createWatcher(deps: { store: Store; ronin: RoninClient; channel:
         if (status.needsInput && status.question && status.question !== t.lastQuestion) {
           const messageId = await channel.sendQuestion(t.name, status.question, status.options);
           store.updateSession(t.name, { lastQuestion: status.question, questionMessageId: messageId });
+        } else if (!status.needsInput && (t.lastQuestion !== null || t.questionMessageId !== null)) {
+          // Ya se contestó: se olvida la pregunta para poder reenviarla si vuelve a hacerse.
+          store.updateSession(t.name, { lastQuestion: null, questionMessageId: null });
         }
         if (status.gate && status.gate.stage !== t.lastGate) {
           const attempts = status.gate.attempts !== undefined ? ` (${status.gate.attempts} intentos)` : "";

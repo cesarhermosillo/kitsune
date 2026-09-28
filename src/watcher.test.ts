@@ -78,3 +78,26 @@ test("sin sesiones seguidas no llama a Ronin", async () => {
   await h.watcher.tick();
   assert.deepEqual(h.asked, []);
 });
+
+test("I3: la misma pregunta, tras contestarse, se reenvía si vuelve a aparecer", async () => {
+  const asking: SessionStatus = { ...base, attention: "decision", needsInput: true, question: "¿Sigo?" };
+  const seq = [asking, base, asking];
+  let i = 0;
+  const h = setup(() => [seq[Math.min(i++, seq.length - 1)]]);
+  await h.watcher.tick();
+  await h.watcher.tick();
+  const cleared = h.store.listActiveSessions()[0];
+  assert.deepEqual([cleared.lastQuestion, cleared.questionMessageId], [null, null]);
+  await h.watcher.tick();
+  assert.deepEqual(h.log, ["question:cowork-a:¿Sigo?", "question:cowork-a:¿Sigo?"]);
+  assert.equal(h.store.findSessionByQuestion(502)?.name, "cowork-a");
+});
+
+test("I3: sin pregunta previa no escribe en la sesión", async () => {
+  const h = setup(() => [base]);
+  const writes: unknown[] = [];
+  const original = h.store.updateSession;
+  h.store.updateSession = (name, patch) => { writes.push(patch); original(name, patch); };
+  await h.watcher.tick();
+  assert.deepEqual(writes, []);
+});

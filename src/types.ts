@@ -15,6 +15,7 @@ export interface SessionStatus {
   stagesDone: number; stagesTotal: number;
   attention: "decision" | "working" | "idle" | "shell" | "gone" | null;
   needsInput: boolean; question?: string;
+  options?: string[];
   gate: { stage: string; attempts?: number } | null;
 }
 export type ProposalStatus = "pending" | "approved" | "launched" | "failed" | "rejected" | "expired";

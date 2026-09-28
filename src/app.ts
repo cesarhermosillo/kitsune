@@ -3,7 +3,7 @@ import { parseUpdate, type Channel, type ChannelEvent } from "./channels/telegra
 import type { TgUpdate } from "./channels/telegram-api.js";
 import type { Policy } from "./policy.js";
 import { InvalidTransition } from "./proposals.js";
-import type { RoninClient } from "./ronin-client.js";
+import { RoninError, type RoninClient } from "./ronin-client.js";
 import type { Store } from "./store.js";
 import type { Catalog, InboxEvent, Proposal, Triage } from "./types.js";
 
@@ -21,6 +21,23 @@ export interface KitsuneApp {
 
 const clip = (text: string, max = 500) => (text.length > max ? `${text.slice(0, max)}…` : text);
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const MAX_SESSION_NAME = 60;
+const SLUG_WORDS = 6;
+
+/**
+ * Nombre de sesión determinista y único por propuesta: `cowork-<slug>-<6 del id>`.
+ * Cumple el contrato de Ronin (prefijo cowork-, [A-Za-z0-9._@-], ≤ 80) con ≤ 60 en total,
+ * y es el mismo en cada reintento.
+ */
+export function sessionNameFor(p: Pick<Proposal, "id" | "request">): string {
+  const suffix = p.id.slice(0, 6);
+  const room = MAX_SESSION_NAME - "cowork-".length - 1 - suffix.length;
+  const words = p.request.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .split(/[^a-z0-9]+/).filter(Boolean).slice(0, SLUG_WORDS);
+  const slug = words.join("-").slice(0, room).replace(/-+$/, "") || "tarea";
+  return `cowork-${slug}-${suffix}`;
+}
 
 /**
  * Procesa un lote de getUpdates. Cada update se maneja por separado y el offset
@@ -61,19 +78,30 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
   }
 
   async function launch(p: Proposal): Promise<void> {
+    const name = sessionNameFor(p);
     let session: { name: string };
     try {
-      session = await deps.ronin.createSession({ repo: p.repo, workflowId: p.workflowId, request: p.request, origen: p.origin });
+      session = await deps.ronin.createSession({ repo: p.repo, workflowId: p.workflowId, request: p.request, origen: p.origin, name });
     } catch (error) {
+      if (error instanceof RoninError && error.code === "SESSION_ALREADY_EXISTS") {
+        // El nombre es único por propuesta: si ya existe, un intento anterior sí la creó
+        // pero se perdió la respuesta (timeout, reinicio). Se toma como lanzada.
+        await launched(p, name, true);
+        return;
+      }
       const failed = store.transition(p.id, "failed", deps.now(), { error: errorText(error) });
       store.audit("ronin", "launch_failed", p.id, { error: errorText(error) }, deps.now());
       await edit(failed, `⚠️ No se pudo lanzar: ${errorText(error)}`);
       return;
     }
-    const launched = store.transition(p.id, "launched", deps.now(), { sessionName: session.name, error: null });
-    store.trackSession(session.name, p.id);
-    store.audit("ronin", "session_created", p.id, { session: session.name }, deps.now());
-    await edit(launched, `✅ Sesión ${session.name} creada`);
+    await launched(p, session.name, false);
+  }
+
+  async function launched(p: Proposal, sessionName: string, recovered: boolean): Promise<void> {
+    const updated = store.transition(p.id, "launched", deps.now(), { sessionName, error: null });
+    store.trackSession(sessionName, p.id);
+    store.audit("ronin", "session_created", p.id, { session: sessionName, ...(recovered ? { recovered: true } : {}) }, deps.now());
+    await edit(updated, `✅ Sesión ${sessionName} creada`);
   }
 
   /** Tras editar, se envía un mensaje nuevo; el encabezado usa p.origin porque el evento ya no está en memoria. */

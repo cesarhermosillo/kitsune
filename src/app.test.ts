@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createKitsuneApp, processUpdates, type KitsuneApp } from "./app.js";
+import { createKitsuneApp, processUpdates, sessionNameFor, type KitsuneApp } from "./app.js";
 import { TriageError, type Brain } from "./brain.js";
 import type { Channel } from "./channels/telegram.js";
 import { createPolicy } from "./policy.js";
@@ -84,7 +84,7 @@ test("approve lanza la sesión, la sigue y actualiza el mensaje", async () => {
   await h.app.onInboxEvent(EVENT);
   const [p] = h.store.listPending();
   await h.app.onChannelEvent(cb("approve", p.id));
-  assert.deepEqual(h.launches, [{ repo: "todo-api", workflowId: "wf-1", request: "Valida títulos", origen: "clickup:t1" }]);
+  assert.deepEqual(h.launches, [{ repo: "todo-api", workflowId: "wf-1", request: "Valida títulos", origen: "clickup:t1", name: `cowork-valida-titulos-${p.id.slice(0, 6)}` }]);
   assert.equal(h.store.getProposal(p.id)?.status, "launched");
   assert.deepEqual(h.store.listActiveSessions().map((s) => s.name), ["cowork-valida"]);
   assert.ok(h.log.includes("update:launched:✅ Sesión cowork-valida creada"));
@@ -309,4 +309,49 @@ test("C1: processUpdates avanza el offset aunque un update falle y lo audita", a
   const audit = store.listAudit(10).find((a) => a.action === "update_failed");
   assert.deepEqual([audit?.actor, audit?.target, audit?.detail], ["kitsune", "11", { error: "boom" }]);
   assert.ok(lines.some((l) => l.includes("boom")));
+});
+
+test("I2: sessionNameFor es determinista, válido para Ronin y ≤ 60", () => {
+  const base = { id: "abc123defg", request: "Valida los títulos VACÍOS en la API de tareas, por favor ahora" } as never;
+  assert.equal(sessionNameFor(base), "cowork-valida-los-titulos-vacios-en-la-abc123");
+  const long = sessionNameFor({ id: "zzz999qqqq", request: "Supercalifragilisticoespialidoso ".repeat(10) } as never);
+  assert.ok(long.length <= 60, long);
+  assert.match(long, /^cowork-[a-z0-9-]+-zzz999$/);
+  assert.doesNotMatch(long, /--/);
+  assert.equal(sessionNameFor({ id: "abc123defg", request: "¿¡ !!" } as never), "cowork-tarea-abc123");
+  for (const n of [long, sessionNameFor(base)]) assert.match(n, /^cowork-[A-Za-z0-9._@-]{1,73}$/);
+});
+
+test("I2: dos tareas que empiezan igual reciben nombres distintos; el reintento usa el mismo", async () => {
+  let fail = true;
+  const h = harness({ launch: async () => { if (fail) throw new RoninError("UNREACHABLE", "Ronin no responde"); return { name: "cowork-x" }; } });
+  await h.app.onInboxEvent(EVENT);
+  await h.app.onInboxEvent({ ...EVENT, id: "task_assigned:t2" });
+  const [a, b] = h.store.listPending();
+  await h.app.onChannelEvent(cb("approve", a.id));
+  fail = false;
+  await h.app.onChannelEvent(cb("retry", a.id));
+  await h.app.onChannelEvent(cb("approve", b.id));
+  const names = (h.launches as Array<{ name: string }>).map((l) => l.name);
+  assert.equal(names[0], names[1]);
+  assert.notEqual(names[0], names[2]);
+});
+
+test("I2: reintento con SESSION_ALREADY_EXISTS para ese nombre se toma como lanzada y se sigue", async () => {
+  let attempt = 0;
+  const h = harness({ launch: async () => {
+    attempt++;
+    if (attempt === 1) throw new RoninError("TIMEOUT", "Ronin no respondió a tiempo");
+    throw new RoninError("SESSION_ALREADY_EXISTS", "ya existe una sesión tmux con ese nombre");
+  } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(cb("approve", p.id));
+  assert.equal(h.store.getProposal(p.id)?.status, "failed");
+  await h.app.onChannelEvent(cb("retry", p.id));
+  const after = h.store.getProposal(p.id)!;
+  const expected = sessionNameFor(p);
+  assert.equal(after.status, "launched");
+  assert.equal(after.sessionName, expected);
+  assert.deepEqual(h.store.listActiveSessions().map((s) => s.name), [expected]);
 });

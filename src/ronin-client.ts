@@ -5,7 +5,7 @@ export class RoninError extends Error {
 }
 export interface RoninClient {
   catalog(): Promise<Catalog>;
-  createSession(input: { repo: string; workflowId: string; request: string; origen: string }): Promise<{ name: string; branch?: string; worktree?: string }>;
+  createSession(input: { repo: string; workflowId: string; request: string; origen: string; name?: string }): Promise<{ name: string; branch?: string; worktree?: string }>;
   sessionStatus(names?: string[]): Promise<SessionStatus[]>;
   replySession(name: string, text: string): Promise<void>;
 }

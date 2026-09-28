@@ -28,6 +28,14 @@ test("createSession envía origen y devuelve el nombre", async () => {
   assert.deepEqual(await client.createSession({ repo: "todo-api", workflowId: "wf-1", request: "valida", origen: "clickup:t1" }), { name: "cowork-valida" });
 });
 
+test("createSession manda el nombre cuando se da", async () => {
+  const client = createRoninClient({ url: "http://localhost:8787", token: "cap", fetch: fake((body) => {
+    assert.equal(body.params.arguments.name, "cowork-valida-abc123");
+    return ok(JSON.stringify({ name: "cowork-valida-abc123" }));
+  }) });
+  assert.deepEqual(await client.createSession({ repo: "todo-api", workflowId: "wf-1", request: "valida", origen: "clickup:t1", name: "cowork-valida-abc123" }), { name: "cowork-valida-abc123" });
+});
+
 test("sessionStatus sin nombres no manda names", async () => {
   const client = createRoninClient({ url: "http://localhost:8787", token: "cap", fetch: fake((body) => {
     assert.deepEqual(body.params.arguments, {});

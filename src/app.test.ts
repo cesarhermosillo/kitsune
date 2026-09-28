@@ -355,3 +355,32 @@ test("I2: reintento con SESSION_ALREADY_EXISTS para ese nombre se toma como lanz
   assert.equal(after.sessionName, expected);
   assert.deepEqual(h.store.listActiveSessions().map((s) => s.name), [expected]);
 });
+
+test("I4: si enviar la propuesta falla no lanza, queda sin message id y redeliver la reenvía", async () => {
+  let down = true;
+  const h = harness({ channel: { sendProposal: async (p) => { if (down) throw new Error("Telegram sendMessage: fetch failed"); h.log.push(`proposal:${p.id}`); return 777; } } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  assert.equal(p.telegramMessageId, null);
+  assert.deepEqual(h.store.listUndelivered().map((x) => x.id), [p.id]);
+  assert.equal(await h.app.redeliver(), 0);
+  down = false;
+  assert.equal(await h.app.redeliver(), 1);
+  assert.equal(h.store.getProposal(p.id)?.telegramMessageId, 777);
+  assert.deepEqual(h.store.listUndelivered(), []);
+  assert.equal(await h.app.redeliver(), 0);
+});
+
+test("I4: redeliver ignora propuestas que ya no están pendientes", async () => {
+  const h = harness({ channel: { sendProposal: async () => { throw new Error("caído"); } } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  h.store.transition(p.id, "rejected", 2);
+  assert.deepEqual(h.store.listUndelivered(), []);
+});
+
+test("I4: un aviso que falla no lanza fuera de onInboxEvent (best-effort)", async () => {
+  const h = harness({ triage: { action: "notify", summary: "hola", reason: "r" }, channel: { sendNotice: async () => { throw new Error("caído"); } } });
+  await h.app.onInboxEvent(EVENT);
+  assert.equal(h.store.hasEvent(EVENT.id), true);
+});

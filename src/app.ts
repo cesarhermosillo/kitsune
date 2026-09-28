@@ -17,6 +17,8 @@ export interface KitsuneApp {
   sweepExpired(): Promise<number>;
   /** Al arrancar: las propuestas que quedaron en `approved` (el daemon murió a medio lanzar) pasan a `failed`. */
   recoverInterrupted(): Promise<number>;
+  /** Reenvía las propuestas pendientes cuyo envío a Telegram falló (sin message id). Devuelve cuántas se entregaron. */
+  redeliver(): Promise<number>;
 }
 
 const clip = (text: string, max = 500) => (text.length > max ? `${text.slice(0, max)}…` : text);
@@ -220,25 +222,27 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
       } catch (error) {
         store.setTriage(event.id, null, "failed");
         const reason = error instanceof TriageError ? error.message : errorText(error);
-        await channel.sendNotice(`⚠️ No pude clasificar: ${event.title}\n${event.url}\n\n${clip(event.body)}\n\n(${reason})`);
+        await notice(`⚠️ No pude clasificar: ${event.title}\n${event.url}\n\n${clip(event.body)}\n\n(${reason})`);
         return;
       }
       store.setTriage(event.id, triage, "done");
       if (triage.action === "ignore") return;
       if (triage.action === "notify") {
-        await channel.sendNotice(`🦊 ${triage.summary}\n${event.url}`);
+        await notice(`🦊 ${triage.summary}\n${event.url}`);
         return;
       }
       const workflow = catalog.workflows.find((w) => w.name === triage.workflow);
       if (!workflow) {
-        await channel.sendNotice(`🦊 ${triage.request}\n${event.url}\n\n(el workflow ${triage.workflow} ya no está en el catálogo)`);
+        await notice(`🦊 ${triage.request}\n${event.url}\n\n(el workflow ${triage.workflow} ya no está en el catálogo)`);
         return;
       }
       const p = store.createProposal({
         eventId: event.id, repo: triage.repo, workflowId: workflow.id, workflowName: workflow.name,
         request: triage.request, origin: `clickup:${event.meta.taskId}`,
       }, deps.now());
-      store.setMessageId(p.id, await channel.sendProposal(p, event));
+      // Si Telegram falla, la propuesta queda sin message id y redeliver() la reenvía.
+      try { store.setMessageId(p.id, await channel.sendProposal(p, event)); }
+      catch (error) { log(`[telegram] no se pudo enviar la propuesta ${p.id}: ${errorText(error)}`); }
     },
     async onChannelEvent(event) {
       if (!deps.policy.isAuthorized(event.chatId)) {
@@ -265,6 +269,18 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
         await edit(p, "⚠️ Lanzamiento interrumpido (Kitsune se reinició). Usa 🔁 para reintentar.");
       }
       return interrupted.length;
+    },
+    async redeliver() {
+      let delivered = 0;
+      for (const p of store.listUndelivered()) {
+        try {
+          store.setMessageId(p.id, await channel.sendProposal(p, null));
+          delivered++;
+        } catch (error) {
+          log(`[telegram] reenvío de ${p.id} falló: ${errorText(error)}`);
+        }
+      }
+      return delivered;
     },
   };
 }

@@ -78,7 +78,9 @@ async function start(dir: string) {
       onAlert: async (e) => { await k.channel.sendNotice(`⚠️ No puedo consultar a Ronin: ${e instanceof Error ? e.message : String(e)}`); },
     },
     {
-      name: "expiry", intervalMs: 60_000, run: async () => { await k.app.sweepExpired(); },
+      // Además de expirar, reenvía las propuestas cuyo envío a Telegram falló.
+      // Los avisos (sendNotice) son best-effort: si fallan no se reenvían.
+      name: "expiry", intervalMs: 60_000, run: async () => { await k.app.sweepExpired(); await k.app.redeliver(); },
       onAlert: async (e) => { await k.channel.sendNotice(`⚠️ El barrido de propuestas falla repetidamente: ${e instanceof Error ? e.message : String(e)}`); },
     },
   ], { sleep, log, maxBackoffMs: 300_000, alertAfter: 5 });

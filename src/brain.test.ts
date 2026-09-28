@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPrompt, capRequest, createBrain, parseTriage, TriageError } from "./brain.js";
+import { buildPrompt, capRequest, createBrain, createRedactor, parseTriage, TriageError } from "./brain.js";
 import { EngineError, type Engine } from "./engines/types.js";
 import type { Catalog, InboxEvent } from "./types.js";
 
@@ -77,4 +77,23 @@ test("createBrain usa el motor con el timeout y traduce errores del motor a Tria
   assert.deepEqual(seen, [1234]);
   const bad: Engine = { name: "fake", complete: async () => { throw new EngineError("fake", "timeout"); } };
   await assert.rejects(() => createBrain(bad, { timeoutMs: 1 }).triage(EVENT, CATALOG), TriageError);
+});
+
+test("I6: createRedactor reemplaza cada secreto por [redactado] e ignora vacíos", () => {
+  const redact = createRedactor(["pk_123", "", "999:ABC", "cap-tok"]);
+  assert.equal(redact("a pk_123 b 999:ABC c cap-tok pk_123"), "a [redactado] b [redactado] c [redactado] [redactado]");
+  assert.equal(redact("sin secretos"), "sin secretos");
+  assert.equal(createRedactor(["ab", "abcd"])("xabcdx"), "x[redactado]x");
+});
+
+test("I6: la salida del motor se limpia de secretos antes de parsear", async () => {
+  const leaky: Engine = { name: "fake", complete: async () => JSON.stringify({ action: "propose_session", repo: "todo-api", workflow: "plan-tdd-evidencia", request: "usa pk_SECRETO y 123:tg", reason: "cap-XYZ" }) };
+  const triage = await createBrain(leaky, { timeoutMs: 1, secrets: ["pk_SECRETO", "123:tg", "cap-XYZ"] }).triage(EVENT, CATALOG);
+  assert.deepEqual(triage, { action: "propose_session", repo: "todo-api", workflow: "plan-tdd-evidencia", request: "usa [redactado] y [redactado]", reason: "[redactado]" });
+});
+
+test("I6: los errores del motor también se limpian de secretos", async () => {
+  const bad: Engine = { name: "fake", complete: async () => { throw new EngineError("fake", "stderr: token pk_SECRETO"); } };
+  await assert.rejects(() => createBrain(bad, { timeoutMs: 1, secrets: ["pk_SECRETO"] }).triage(EVENT, CATALOG),
+    (e: unknown) => e instanceof TriageError && !e.message.includes("pk_SECRETO") && e.message.includes("[redactado]"));
 });

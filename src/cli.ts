@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as nodeSleep } from "node:timers/promises";
 import { createKitsuneApp, processUpdates } from "./app.js";
-import { createBrain } from "./brain.js";
+import { createBrain, createRedactor } from "./brain.js";
 import { createTelegramApi } from "./channels/telegram-api.js";
 import { createTelegramChannel } from "./channels/telegram.js";
 import { ConfigError, defaultConfigDir, loadConfig } from "./config.js";
@@ -31,6 +31,7 @@ async function sleep(ms: number, signal: AbortSignal): Promise<void> {
 
 function build(dir: string) {
   const { config, secrets } = loadConfig(dir);
+  const secretList = [secrets.clickupToken, secrets.telegramBotToken, secrets.roninCapabilityToken];
   mkdirSync(dir, { recursive: true });
   const store = openStore(join(dir, "kitsune.db"));
   const engine = createEngine(config.engine, { run: runProcess, tmpDir: () => mkdtempSync(join(tmpdir(), "kitsune-engine-")), readFile: (p) => readFileSync(p, "utf8") });
@@ -39,10 +40,10 @@ function build(dir: string) {
   const ronin = createRoninClient({ url: config.ronin.url, token: secrets.roninCapabilityToken, fetch });
   const clickup = createClickUpConnector({ token: secrets.clickupToken, listIds: config.clickup.listIds, fetch, now: Date.now });
   const app = createKitsuneApp({
-    store, brain: createBrain(engine, { timeoutMs: config.engineTimeoutSec * 1000 }), ronin, channel,
+    store, brain: createBrain(engine, { timeoutMs: config.engineTimeoutSec * 1000, secrets: secretList }), ronin, channel,
     policy: createPolicy({ chatId: config.telegram.chatId }), now: Date.now, ttlMs: config.proposals.ttlHours * 3_600_000, log,
   });
-  return { config, store, engine, api, channel, ronin, clickup, app, watcher: createWatcher({ store, ronin, channel }) };
+  return { config, store, engine, api, channel, ronin, clickup, app, redact: createRedactor(secretList), watcher: createWatcher({ store, ronin, channel }) };
 }
 
 async function start(dir: string) {
@@ -96,7 +97,7 @@ async function doctor(dir: string) {
   checks.push(["ClickUp", async () => `${(await k.clickup.poll(Date.now())).events.length} eventos recientes`]);
   checks.push(["Telegram", async () => { await k.channel.sendNotice("🦊 Kitsune doctor: conexión OK"); return "mensaje de prueba enviado"; }]);
   checks.push(["Ronin", async () => { const c = await k.ronin.catalog(); return `${c.repos.length} repos, ${c.workflows.length} workflows`; }]);
-  checks.push([`Motor (${k.config.engine})`, async () => (await k.engine.complete('Responde exactamente: {"ok":true}', { timeoutMs: 60_000 })).slice(0, 60)]);
+  checks.push([`Motor (${k.config.engine})`, async () => k.redact(await k.engine.complete('Responde exactamente: {"ok":true}', { timeoutMs: 60_000 })).slice(0, 60)]);
   for (const [name, check] of checks) {
     try { console.log(`✔ ${name}: ${await check()}`); } catch (e) { console.log(`✖ ${name}: ${e instanceof Error ? e.message : String(e)}`); process.exitCode = 1; }
   }

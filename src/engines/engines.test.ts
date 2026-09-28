@@ -29,7 +29,7 @@ test("codex: lee el último mensaje del archivo de salida", async () => {
   const { run, calls } = recorder({});
   const out = await createEngine("codex", deps(run, { "/tmp/k1/last.txt": "respuesta" })).complete("hola", { timeoutMs: 1000 });
   assert.equal(out, "respuesta");
-  assert.deepEqual(calls[0].args, ["exec", "--skip-git-repo-check", "-s", "read-only", "-o", "/tmp/k1/last.txt", "-"]);
+  assert.deepEqual(calls[0].args, ["exec", "--skip-git-repo-check", "-s", "read-only", "--disable", "shell_tool", "--disable", "unified_exec", "-o", "/tmp/k1/last.txt", "-"]);
   assert.equal(calls[0].stdin, "hola");
 });
 

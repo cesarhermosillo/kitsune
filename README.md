@@ -12,8 +12,15 @@ Nothing that creates or changes anything runs without your explicit approval.
 ## How it works
 
 - **Connectors**: ClickUp (tasks assigned to you, mentions, comments on your tasks).
-- **Brain**: one headless call per event, with no tools. Output is validated against a schema and
-  against Ronin's catalog. Third-party content is treated as data, never as instructions.
+- **Brain**: one headless call per event. Output is validated against a schema and against Ronin's
+  catalog, and any of your three secrets that appears in it is replaced by `[redactado]` before it
+  is parsed, stored or sent. Third-party content is treated as data, never as instructions.
+
+  | Engine | Tool-less? |
+  |---|---|
+  | `claude` | **Yes** — `--tools ""`, `--strict-mcp-config`. Recommended, especially for untrusted inboxes. |
+  | `codex` | **No** — not tool-less; opt-in. Runs with `-s read-only --disable shell_tool --disable unified_exec`, but Codex has no verifiable "no tools" mode, so the model may still be able to read local files. Use `claude` for untrusted inboxes. |
+  | `agy` | Runs with `--sandbox`; not verified as tool-less. Same advice as `codex`. |
 - **Telegram**: proposals with ✅ / ✏️ / ❌, retries, expiry, and replies forwarded to the agent.
 - **Ronin (MCP)**: `listar_repos_y_workflows`, `crear_sesion`, `estado_sesiones`, `responder_sesion`.
 - **Local state**: SQLite at `~/.kitsune/kitsune.db`, including a full audit log.

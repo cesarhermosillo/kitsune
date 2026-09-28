@@ -92,13 +92,24 @@ export function parseTriage(raw: string, catalog: Catalog): Triage {
   throw new TriageError(`acción desconocida: ${String(data.action)}`);
 }
 
-export function createBrain(engine: Engine, opts: { timeoutMs: number }): Brain {
+/**
+ * Devuelve una función que reemplaza cada secreto por "[redactado]". Defensa en
+ * profundidad: si el motor llegara a leer un secreto (p. ej. vía inyección de
+ * prompt), nunca se parsea, guarda ni envía.
+ */
+export function createRedactor(secrets: string[]): (text: string) => string {
+  const list = [...new Set(secrets.filter((s) => s.length > 0))].sort((a, b) => b.length - a.length);
+  return (text) => list.reduce((out, secret) => out.split(secret).join("[redactado]"), text);
+}
+
+export function createBrain(engine: Engine, opts: { timeoutMs: number; secrets?: string[] }): Brain {
+  const redact = createRedactor(opts.secrets ?? []);
   return {
     async triage(event, catalog) {
       let raw: string;
       try { raw = await engine.complete(buildPrompt(event, catalog), { timeoutMs: opts.timeoutMs }); }
-      catch (error) { throw new TriageError(error instanceof Error ? error.message : "el motor falló"); }
-      return parseTriage(raw, catalog);
+      catch (error) { throw new TriageError(redact(error instanceof Error ? error.message : "el motor falló")); }
+      return parseTriage(redact(raw), catalog);
     },
   };
 }

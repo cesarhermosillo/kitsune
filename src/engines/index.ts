@@ -44,7 +44,11 @@ export function createEngine(name: EngineName, deps: EngineDeps): Engine {
       async complete(prompt, { timeoutMs }) {
         const dir = deps.tmpDir();
         const out = join(dir, "last.txt");
-        const result = await deps.run("codex", ["exec", "--skip-git-repo-check", "-s", "read-only", "-o", out, "-"],
+        // Codex no tiene un modo "sin herramientas" verificable: se apagan las herramientas de
+        // shell (`--disable shell_tool`, `--disable unified_exec`, ver `codex features list`) y se
+        // deja el sandbox en solo lectura. No se considera tool-less (ver README).
+        const result = await deps.run("codex", ["exec", "--skip-git-repo-check", "-s", "read-only",
+          "--disable", "shell_tool", "--disable", "unified_exec", "-o", out, "-"],
           { timeoutMs, cwd: dir, stdin: prompt }
         );
         check(name, result);

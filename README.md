@@ -22,16 +22,23 @@ Nothing that creates or changes anything runs without your explicit approval.
   | `codex` | **No** — not tool-less; opt-in. Runs with `-s read-only --disable shell_tool --disable unified_exec`, but Codex has no verifiable "no tools" mode, so the model may still be able to read local files. Use `claude` for untrusted inboxes. |
   | `agy` | Runs with `--sandbox`; not verified as tool-less. Same advice as `codex`. |
 - **Telegram**: proposals with ✅ / ✏️ / ❌, retries, expiry, and replies forwarded to the agent.
+  If a proposal can't be delivered, it is re-sent every minute while it is pending. Plain notices
+  (mentions, errors, finished sessions) are best-effort and are not re-sent. Button taps are
+  handled at most once: if handling one fails it is logged and audited, never retried.
 - **Ronin (MCP)**: `listar_repos_y_workflows`, `crear_sesion`, `estado_sesiones`, `responder_sesion`.
 - **Local state**: SQLite at `~/.kitsune/kitsune.db`, including a full audit log.
 
 ## Setup
 
-1. Node ≥ 22.13, Ronin running locally, and at least one of `claude`, `codex`, `agy`.
-2. `npm install && npm run build`
-3. `mkdir -p ~/.kitsune && cp config.example.json ~/.kitsune/config.json` and edit it.
+1. Node ≥ 22.13, Ronin running locally **with the MCP session tools** (`crear_sesion`,
+   `estado_sesiones`, `responder_sesion` — branch `feat/mcp-sesiones` or later), and at least one
+   of `claude`, `codex`, `agy`.
+2. `npm install` (builds via `prepare`; or run `npm run build`).
+3. `mkdir -m 700 -p ~/.kitsune && cp config.example.json ~/.kitsune/config.json` and edit it.
 4. Create `~/.kitsune/.env` with `CLICKUP_TOKEN`, `TELEGRAM_BOT_TOKEN`,
    `RONIN_CAPABILITY_TOKEN`, then `chmod 600 ~/.kitsune/.env`.
+   `RONIN_CAPABILITY_TOKEN` is the content of the `capability-token` file in Ronin's data
+   directory (`COWORK_DATA_DIR`, or Ronin's default data dir).
    See [docs/telegram-setup.md](docs/telegram-setup.md) for the bot.
 5. `npm run doctor`, then `npm start`.
 

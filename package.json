@@ -8,6 +8,7 @@
   "bin": { "kitsune": "dist/cli.js" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "start": "tsx src/cli.ts start",
     "doctor": "tsx src/cli.ts doctor",
     "test": "node --import tsx --test 'src/**/*.test.ts'",

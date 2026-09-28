@@ -2,7 +2,7 @@
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
+import { setTimeout as nodeSleep } from "node:timers/promises";
 import { createKitsuneApp } from "./app.js";
 import { createBrain } from "./brain.js";
 import { createTelegramApi } from "./channels/telegram-api.js";
@@ -18,6 +18,16 @@ import { openStore } from "./store.js";
 import { createWatcher } from "./watcher.js";
 
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
+
+// Duerme hasta `ms` o hasta que `signal` se aborte (usado por stop() para no
+// esperar el backoff completo, hasta maxBackoffMs, al apagar el daemon).
+async function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  try {
+    await nodeSleep(ms, undefined, { signal });
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "AbortError") throw error;
+  }
+}
 
 function build(dir: string) {
   const { config, secrets } = loadConfig(dir);
@@ -50,6 +60,9 @@ async function start(dir: string) {
       onAlert: async (e) => { await k.channel.sendNotice(`⚠️ ClickUp falla repetidamente: ${e instanceof Error ? e.message : String(e)}`); },
     },
     {
+      // Long polling (`timeout: 30`): cada llamada a getUpdates puede tardar hasta 30 s
+      // antes de resolver; intervalMs: 1000 solo separa ciclos consecutivos, no limita esta espera.
+      // Sin onAlert: si el propio canal de Telegram falla no hay por dónde avisar al usuario.
       name: "telegram", intervalMs: 1000,
       run: async () => {
         const offset = Number(k.store.getCursor("telegram") ?? 0);
@@ -61,9 +74,15 @@ async function start(dir: string) {
         }
       },
     },
-    { name: "watcher", intervalMs: 15_000, run: () => k.watcher.tick() },
-    { name: "expiry", intervalMs: 60_000, run: async () => { await k.app.sweepExpired(); } },
-  ], { sleep: (ms) => sleep(ms), log, maxBackoffMs: 300_000, alertAfter: 5 });
+    {
+      name: "watcher", intervalMs: 15_000, run: () => k.watcher.tick(),
+      onAlert: async (e) => { await k.channel.sendNotice(`⚠️ No puedo consultar a Ronin: ${e instanceof Error ? e.message : String(e)}`); },
+    },
+    {
+      name: "expiry", intervalMs: 60_000, run: async () => { await k.app.sweepExpired(); },
+      onAlert: async (e) => { await k.channel.sendNotice(`⚠️ El barrido de propuestas falla repetidamente: ${e instanceof Error ? e.message : String(e)}`); },
+    },
+  ], { sleep, log, maxBackoffMs: 300_000, alertAfter: 5 });
   const shutdown = async () => { log("deteniendo…"); await handle.stop(); k.store.close(); process.exit(0); };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

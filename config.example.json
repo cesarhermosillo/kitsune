@@ -1,0 +1,9 @@
+{
+  "engine": "claude",
+  "engineTimeoutSec": 60,
+  "poll": { "intervalSec": 60 },
+  "clickup": { "listIds": ["901200000001"] },
+  "telegram": { "chatId": 123456789 },
+  "ronin": { "url": "http://localhost:8787" },
+  "proposals": { "ttlHours": 24 }
+}

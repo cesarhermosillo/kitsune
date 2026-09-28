@@ -1,0 +1,95 @@
+#!/usr/bin/env node
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { createKitsuneApp } from "./app.js";
+import { createBrain } from "./brain.js";
+import { createTelegramApi } from "./channels/telegram-api.js";
+import { createTelegramChannel, parseUpdate } from "./channels/telegram.js";
+import { ConfigError, defaultConfigDir, loadConfig } from "./config.js";
+import { createClickUpConnector } from "./connectors/clickup.js";
+import { startLoops } from "./daemon.js";
+import { createEngine } from "./engines/index.js";
+import { runProcess } from "./engines/process.js";
+import { createPolicy } from "./policy.js";
+import { createRoninClient } from "./ronin-client.js";
+import { openStore } from "./store.js";
+import { createWatcher } from "./watcher.js";
+
+const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
+
+function build(dir: string) {
+  const { config, secrets } = loadConfig(dir);
+  mkdirSync(dir, { recursive: true });
+  const store = openStore(join(dir, "kitsune.db"));
+  const engine = createEngine(config.engine, { run: runProcess, tmpDir: () => mkdtempSync(join(tmpdir(), "kitsune-engine-")), readFile: (p) => readFileSync(p, "utf8") });
+  const api = createTelegramApi({ token: secrets.telegramBotToken, fetch });
+  const channel = createTelegramChannel({ api, chatId: config.telegram.chatId });
+  const ronin = createRoninClient({ url: config.ronin.url, token: secrets.roninCapabilityToken, fetch });
+  const clickup = createClickUpConnector({ token: secrets.clickupToken, listIds: config.clickup.listIds, fetch, now: Date.now });
+  const app = createKitsuneApp({
+    store, brain: createBrain(engine, { timeoutMs: config.engineTimeoutSec * 1000 }), ronin, channel,
+    policy: createPolicy({ chatId: config.telegram.chatId }), now: Date.now, ttlMs: config.proposals.ttlHours * 3_600_000,
+  });
+  return { config, store, engine, api, channel, ronin, clickup, app, watcher: createWatcher({ store, ronin, channel }) };
+}
+
+async function start(dir: string) {
+  const k = build(dir);
+  log(`Kitsune listo · motor ${k.config.engine} · Ronin ${k.config.ronin.url}`);
+  const handle = startLoops([
+    {
+      name: "clickup", intervalMs: k.config.poll.intervalSec * 1000,
+      run: async () => {
+        const since = Number(k.store.getCursor("clickup") ?? Date.now() - 24 * 3_600_000);
+        const { events, nextCursor } = await k.clickup.poll(since);
+        for (const event of events) await k.app.onInboxEvent(event);
+        k.store.setCursor("clickup", String(nextCursor));
+      },
+      onAlert: async (e) => { await k.channel.sendNotice(`⚠️ ClickUp falla repetidamente: ${e instanceof Error ? e.message : String(e)}`); },
+    },
+    {
+      name: "telegram", intervalMs: 1000,
+      run: async () => {
+        const offset = Number(k.store.getCursor("telegram") ?? 0);
+        const updates = await k.api.getUpdates(offset, 30);
+        for (const update of updates) {
+          const event = parseUpdate(update);
+          if (event) await k.app.onChannelEvent(event);
+          k.store.setCursor("telegram", String(update.update_id + 1));
+        }
+      },
+    },
+    { name: "watcher", intervalMs: 15_000, run: () => k.watcher.tick() },
+    { name: "expiry", intervalMs: 60_000, run: async () => { await k.app.sweepExpired(); } },
+  ], { sleep: (ms) => sleep(ms), log, maxBackoffMs: 300_000, alertAfter: 5 });
+  const shutdown = async () => { log("deteniendo…"); await handle.stop(); k.store.close(); process.exit(0); };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
+
+async function doctor(dir: string) {
+  const checks: Array<[string, () => Promise<string>]> = [];
+  let k: ReturnType<typeof build>;
+  try { k = build(dir); } catch (e) { console.log(`✖ configuración: ${e instanceof Error ? e.message : String(e)}`); process.exitCode = 1; return; }
+  checks.push(["ClickUp", async () => `${(await k.clickup.poll(Date.now())).events.length} eventos recientes`]);
+  checks.push(["Telegram", async () => { await k.channel.sendNotice("🦊 Kitsune doctor: conexión OK"); return "mensaje de prueba enviado"; }]);
+  checks.push(["Ronin", async () => { const c = await k.ronin.catalog(); return `${c.repos.length} repos, ${c.workflows.length} workflows`; }]);
+  checks.push([`Motor (${k.config.engine})`, async () => (await k.engine.complete('Responde exactamente: {"ok":true}', { timeoutMs: 60_000 })).slice(0, 60)]);
+  for (const [name, check] of checks) {
+    try { console.log(`✔ ${name}: ${await check()}`); } catch (e) { console.log(`✖ ${name}: ${e instanceof Error ? e.message : String(e)}`); process.exitCode = 1; }
+  }
+  k.store.close();
+}
+
+const [command = "start"] = process.argv.slice(2);
+const dir = process.env.KITSUNE_HOME ?? defaultConfigDir();
+try {
+  if (command === "start") await start(dir);
+  else if (command === "doctor") await doctor(dir);
+  else { console.log("uso: kitsune [start|doctor]"); process.exitCode = 64; }
+} catch (e) {
+  console.error(e instanceof ConfigError ? `configuración: ${e.message}` : e);
+  process.exitCode = 1;
+}

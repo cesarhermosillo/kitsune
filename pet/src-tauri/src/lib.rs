@@ -1,6 +1,20 @@
 use tauri::menu::{CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow, Wry};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow, Wry};
+use tauri_plugin_window_state::StateFlags;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+const TRAY_ID: &str = "main";
+
+/// m1: "No molestar" vive en Rust para que la bandeja y el menú contextual muestren la marca
+/// correcta; el webview lo persiste en localStorage y lo envía al arrancar con `set_dnd`.
+#[derive(Default)]
+struct Dnd(AtomicBool);
+
+/// Evento explícito que recibe el webview cuando cambia "No molestar".
+fn dnd_payload(on: bool) -> &'static str {
+    if on { "dnd_on" } else { "dnd_off" }
+}
 
 /// Spec §4: clicking the "Ver en Ronin" link in the expanded bubble, and the
 /// tray/context menu's "Abrir Ronin" item, must run the exact same command —
@@ -77,7 +91,7 @@ fn open_ronin() {
     spawn_open_ronin();
 }
 
-fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+fn build_menu(app: &AppHandle, dnd: bool) -> tauri::Result<Menu<Wry>> {
     let size = SubmenuBuilder::new(app, "Tamaño")
         .item(&MenuItemBuilder::with_id("size_2", "2×").build(app)?)
         .item(&MenuItemBuilder::with_id("size_3", "3×").build(app)?)
@@ -85,7 +99,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .build()?;
     MenuBuilder::new(app)
         .item(&MenuItemBuilder::with_id("toggle", "Ocultar / Mostrar").build(app)?)
-        .item(&CheckMenuItemBuilder::with_id("dnd", "No molestar").build(app)?)
+        .item(&CheckMenuItemBuilder::with_id("dnd", "No molestar").checked(dnd).build(app)?)
         .item(&MenuItemBuilder::with_id("open_ronin", "Abrir Ronin").build(app)?)
         .item(&size)
         .separator()
@@ -93,13 +107,38 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .build()
 }
 
+fn current_dnd(app: &AppHandle) -> bool {
+    app.state::<Dnd>().0.load(Ordering::SeqCst)
+}
+
+/// Reconstruye el menú de la bandeja para que la marca de "No molestar" refleje el estado.
+fn refresh_tray_menu(app: &AppHandle) {
+    if let (Some(tray), Ok(menu)) = (app.tray_by_id(TRAY_ID), build_menu(app, current_dnd(app))) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
+#[tauri::command]
+fn set_dnd(app: AppHandle, dnd: State<'_, Dnd>, on: bool) {
+    dnd.0.store(on, Ordering::SeqCst);
+    refresh_tray_menu(&app);
+}
+
 fn handle_menu(app: &AppHandle, id: &str) {
     match id {
         "quit" => app.exit(0),
         "toggle" => {
             if let Some(w) = app.get_webview_window("pet") {
-                if w.is_visible().unwrap_or(true) { let _ = w.hide(); } else { let _ = w.show(); }
+                // m2: el webview deja de sondear el cursor mientras la ventana está oculta.
+                let visible = !w.is_visible().unwrap_or(true);
+                if visible { let _ = w.show(); } else { let _ = w.hide(); }
+                let _ = app.emit("pet-visible", visible);
             }
+        }
+        "dnd" => {
+            let on = !app.state::<Dnd>().0.fetch_xor(true, Ordering::SeqCst);
+            refresh_tray_menu(app);
+            let _ = app.emit("pet-menu", dnd_payload(on).to_string());
         }
         "open_ronin" => spawn_open_ronin(),
         other => { let _ = app.emit("pet-menu", other.to_string()); }
@@ -108,7 +147,7 @@ fn handle_menu(app: &AppHandle, id: &str) {
 
 #[tauri::command]
 fn show_context_menu(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    let menu = build_menu(&app).map_err(|e| e.to_string())?;
+    let menu = build_menu(&app, current_dnd(&app)).map_err(|e| e.to_string())?;
     window.popup_menu(&menu).map_err(|e| e.to_string())
 }
 
@@ -140,15 +179,21 @@ fn position_at_bottom_right_on_first_launch(app: &AppHandle) {
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_window_state::Builder::default().build())
-        .invoke_handler(tauri::generate_handler![read_pet_token, set_click_through, cursor_in_window, show_context_menu, open_url, open_ronin])
+        // El tamaño lo fija tauri.conf.json (220×300); solo se recuerda la posición y demás, no el tamaño.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::all() & !StateFlags::SIZE)
+                .build(),
+        )
+        .manage(Dnd::default())
+        .invoke_handler(tauri::generate_handler![read_pet_token, set_click_through, cursor_in_window, show_context_menu, open_url, open_ronin, set_dnd])
         .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             position_at_bottom_right_on_first_launch(app.handle());
-            let menu = build_menu(app.handle())?;
-            TrayIconBuilder::new()
+            let menu = build_menu(app.handle(), current_dnd(app.handle()))?;
+            TrayIconBuilder::with_id(TRAY_ID)
                 .icon(app.default_window_icon().cloned().expect("ícono"))
                 .menu(&menu)
                 .show_menu_on_left_click(true)
@@ -162,6 +207,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dnd_payload_is_explicit() {
+        assert_eq!(dnd_payload(true), "dnd_on");
+        assert_eq!(dnd_payload(false), "dnd_off");
+    }
+
+    #[test]
+    fn dnd_toggle_flips_the_atomic_state() {
+        let dnd = Dnd::default();
+        assert!(!dnd.0.fetch_xor(true, Ordering::SeqCst));
+        assert!(dnd.0.load(Ordering::SeqCst));
+        assert!(dnd.0.fetch_xor(true, Ordering::SeqCst));
+        assert!(!dnd.0.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn is_allowed_url_accepts_https() {

@@ -12,7 +12,7 @@
   "app": {
     "macOSPrivateApi": true,
     "windows": [{
-      "label": "pet", "title": "Kitsune", "width": 220, "height": 220,
+      "label": "pet", "title": "Kitsune", "width": 220, "height": 300,
       "transparent": true, "decorations": false, "alwaysOnTop": true, "skipTaskbar": true,
       "shadow": false, "resizable": false, "visibleOnAllWorkspaces": true, "focus": false
     }],

@@ -206,3 +206,35 @@ test("publica error cuando falla un gate", async () => {
   const errorEvents = h.events.filter((e) => e.type === "error" && e.message === "Falló el gate de tests en cowork-a");
   assert.equal(errorEvents.length, 1);
 });
+
+test("I2: publica session_update cuando needsInput vuelve a false aunque la etapa no cambie", async () => {
+  const asking: SessionStatus = { ...base, attention: "decision", needsInput: true, question: "¿Sigo?" };
+  const h = withBus([[asking], [base]]);
+  await h.watcher.tick();
+  const before = h.events.length;
+  await h.watcher.tick();
+  const after = h.events.slice(before);
+  assert.deepEqual(after.map((e) => e.type), ["session_update"]);
+  assert.equal((after[0] as Extract<KitsuneEvent, { type: "session_update" }>).stage, "implementing");
+});
+
+test("m4: tras reiniciar, una pregunta ya enviada se vuelve a publicar en el bus (no en Telegram) después del session_update", async () => {
+  const asking: SessionStatus = { ...base, attention: "decision", needsInput: true, question: "¿Sigo?" };
+  const store = openStore(":memory:");
+  store.saveEvent({ source: "clickup", id: "e", kind: "task_assigned", title: "", body: "", url: "", author: "", at: "", meta: { taskId: "", listId: "", listName: "", tags: [] } }, 1);
+  const p = store.createProposal({ eventId: "e", repo: "r", workflowId: "w", workflowName: "w", request: "x", origin: "clickup:1", title: "", url: "" }, 1);
+  store.trackSession("cowork-a", p.id);
+  store.updateSession("cowork-a", { lastQuestion: "¿Sigo?", questionMessageId: 42 });
+  const bus = createEventBus(() => 1);
+  const events: KitsuneEvent[] = [];
+  bus.subscribe((e) => events.push(e));
+  const sent: string[] = [];
+  const channel = { sendNotice: async () => 1, sendQuestion: async (_s: string, q: string) => { sent.push(q); return 1; } } as unknown as Channel;
+  const ronin = { sessionStatus: async () => [asking] } as unknown as RoninClient;
+  const watcher = createWatcher({ store, ronin, channel, events: bus });
+  await watcher.tick();
+  assert.deepEqual(events.map((e) => e.type), ["session_update", "session_question"]);
+  assert.deepEqual(sent, []);
+  await watcher.tick();
+  assert.equal(events.length, 2);
+});

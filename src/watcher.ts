@@ -12,7 +12,8 @@ export function createWatcher(deps: { store: Store; ronin: RoninClient; channel:
   // y el flujo sin terminar. Justo después de lanzar el pane es shell unos segundos, por eso se
   // exige verlo dos veces seguidas antes de avisar; se reinicia en cuanto deja de cumplirse.
   const stallTicks = new Map<string, number>();
-  // Última combinación stage|stagesDone|stagesTotal vista por sesión, para publicar session_update solo cuando cambia.
+  // Última combinación stage|stagesDone|stagesTotal|needsInput vista por sesión, para publicar session_update
+  // solo cuando cambia (incluido needsInput: al contestarse la pregunta la mascota sale de `asking`).
   const lastProgress = new Map<string, string>();
   return {
     async tick() {
@@ -29,10 +30,14 @@ export function createWatcher(deps: { store: Store; ronin: RoninClient; channel:
           lastProgress.delete(t.name);
           continue;
         }
-        const progressKey = `${status.stage}|${status.stagesDone}|${status.stagesTotal}`;
+        const progressKey = `${status.stage}|${status.stagesDone}|${status.stagesTotal}|${status.needsInput}`;
+        const newQuestion = !!(status.needsInput && status.question && status.question !== t.lastQuestion);
         if (lastProgress.get(t.name) !== progressKey) {
           lastProgress.set(t.name, progressKey);
           emit({ type: "session_update", name: t.name, stage: status.stage, stagesDone: status.stagesDone, stagesTotal: status.stagesTotal });
+          // session_update limpia needsInput en los consumidores: si la pregunta sigue abierta y ya se
+          // envió a Telegram (p. ej. tras reiniciar el daemon), se vuelve a publicar solo en el bus.
+          if (status.needsInput && status.question && !newQuestion) emit({ type: "session_question", name: t.name, question: status.question });
         }
         const stalled = (status.attention === "shell" || status.attention === "gone")
           && (status.stagesTotal === 0 || status.stagesDone < status.stagesTotal);
@@ -50,7 +55,7 @@ export function createWatcher(deps: { store: Store; ronin: RoninClient; channel:
           store.updateSession(t.name, { notifiedDone: true });
           continue;
         }
-        if (status.needsInput && status.question && status.question !== t.lastQuestion) {
+        if (newQuestion && status.question) {
           emit({ type: "session_question", name: t.name, question: status.question });
           const messageId = await channel.sendQuestion(t.name, status.question, status.options);
           store.updateSession(t.name, { lastQuestion: status.question, questionMessageId: messageId });

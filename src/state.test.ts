@@ -53,3 +53,26 @@ test("dispose deja de escuchar el bus", () => {
   bus.publish({ type: "triage_started", title: "t" });
   assert.equal(tracker.snapshot().triaging, false);
 });
+
+test("m4: sin datos en vivo, la pregunta pendiente sale del store (reinicio del daemon)", () => {
+  const { store, tracker } = setup();
+  store.saveEvent({ source: "clickup", id: "e1", kind: "task_assigned", title: "", body: "", url: "", author: "", at: "", meta: { taskId: "", listId: "", listName: "", tags: [] } }, 1);
+  const p = store.createProposal({ eventId: "e1", repo: "r", workflowId: "w", workflowName: "w", request: "x", origin: "o", title: "", url: "" }, 1);
+  store.trackSession("cowork-a", p.id);
+  store.updateSession("cowork-a", { lastQuestion: "q".repeat(600), questionMessageId: 7 });
+  const [s] = tracker.snapshot().sessions;
+  assert.equal(s.needsInput, true);
+  assert.equal(s.question, "q".repeat(500));
+});
+
+test("m4: los datos en vivo mandan sobre la pregunta guardada", () => {
+  const { store, bus, tracker } = setup();
+  store.saveEvent({ source: "clickup", id: "e1", kind: "task_assigned", title: "", body: "", url: "", author: "", at: "", meta: { taskId: "", listId: "", listName: "", tags: [] } }, 1);
+  const p = store.createProposal({ eventId: "e1", repo: "r", workflowId: "w", workflowName: "w", request: "x", origin: "o", title: "", url: "" }, 1);
+  store.trackSession("cowork-a", p.id);
+  store.updateSession("cowork-a", { lastQuestion: "¿Sigo?", questionMessageId: 7 });
+  bus.publish({ type: "session_update", name: "cowork-a", stage: "tests", stagesDone: 2, stagesTotal: 4 });
+  const [s] = tracker.snapshot().sessions;
+  assert.equal(s.needsInput, false);
+  assert.equal(s.question, undefined);
+});

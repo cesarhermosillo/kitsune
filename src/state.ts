@@ -40,6 +40,8 @@ export function createStateTracker(deps: { store: Store; bus: EventBus }): State
         const s = live.get(t.name);
         const item: SessionItem = { name: clip(t.name), stage: s?.stage ?? null, stagesDone: s?.stagesDone ?? 0, stagesTotal: s?.stagesTotal ?? 0, needsInput: s?.needsInput ?? false };
         if (s?.question) item.question = s.question;
+        // Sin datos en vivo (el daemon acaba de arrancar) la pregunta pendiente sale del store.
+        if (!s && t.lastQuestion) { item.needsInput = true; item.question = clip(t.lastQuestion); }
         return item;
       });
       return { triaging, pending, sessions, lastError };

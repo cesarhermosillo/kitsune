@@ -139,6 +139,7 @@ export function applyEvent(m: Model, e: KitsuneEvent, now: number): Model {
               repo: e.repo,
               workflow: e.workflow,
               createdAt: e.at,
+              status: "pending",
             },
           ],
         };
@@ -148,7 +149,10 @@ export function applyEvent(m: Model, e: KitsuneEvent, now: number): Model {
     case "proposal_resolved":
       state = {
         ...state,
-        pending: state.pending.filter((p) => p.id !== e.id),
+        pending:
+          e.status === "failed"
+            ? state.pending.map((p) => (p.id === e.id ? { ...p, status: "failed" } : p))
+            : state.pending.filter((p) => p.id !== e.id),
       };
       break;
     case "session_update":

@@ -87,6 +87,32 @@ describe("model", () => {
     expect(m.state.pending).toHaveLength(0);
   });
 
+  test("proposal_resolved con failed conserva el item marcado como failed; rejected/expired lo quitan", () => {
+    let m = on(0);
+    const created = (id: string) => ({
+      type: "proposal_created" as const,
+      at: 1,
+      id,
+      title: "T",
+      url: "u",
+      repo: "r",
+      workflow: "w",
+    });
+    m = applyEvent(m, created("p1"), 1);
+    m = applyEvent(m, { type: "proposal_resolved", at: 2, id: "p1", status: "failed" }, 2);
+    expect(m.state.pending).toEqual([
+      { id: "p1", title: "T", url: "u", repo: "r", workflow: "w", createdAt: 1, status: "failed" },
+    ]);
+
+    m = applyEvent(m, created("p2"), 3);
+    m = applyEvent(m, { type: "proposal_resolved", at: 4, id: "p2", status: "rejected" }, 4);
+    expect(m.state.pending.some((p) => p.id === "p2")).toBe(false);
+
+    m = applyEvent(m, created("p3"), 5);
+    m = applyEvent(m, { type: "proposal_resolved", at: 6, id: "p3", status: "expired" }, 6);
+    expect(m.state.pending.some((p) => p.id === "p3")).toBe(false);
+  });
+
   test("burbujas: nueva tarea dura 6 s; la pregunta es fija, acotada a 140 y se quita con session_update", () => {
     let m = applyEvent(on(0), { type: "proposal_created", at: 0, id: "p1", title: "Permisos", url: "u", repo: "r", workflow: "w" }, 0);
     expect(visibleBubble(m, 1)?.text).toBe("Nueva tarea: Permisos");
@@ -112,7 +138,7 @@ describe("model", () => {
       summary({
         ...EMPTY_STATE,
         sessions: [session(), session({ name: "b" })],
-        pending: [{ id: "p", title: "", url: "", repo: "", workflow: "", createdAt: 0 }],
+        pending: [{ id: "p", title: "", url: "", repo: "", workflow: "", createdAt: 0, status: "pending" }],
       })
     ).toBe("2 sesiones trabajando · 1 propuesta pendiente");
   });

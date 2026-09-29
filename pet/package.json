@@ -1,0 +1,25 @@
+{
+  "name": "kitsune-pet",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "sprites": "tsx art/build-sprites.ts",
+    "preview": "npm run sprites && vite --open /preview.html",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
+  }
+}

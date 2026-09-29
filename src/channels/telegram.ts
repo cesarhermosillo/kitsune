@@ -43,9 +43,10 @@ export function parseUpdate(update: TgUpdate): ChannelEvent | null {
 }
 
 export function renderProposal(p: Proposal, event: InboxEvent | null): string {
+  const header = event ? `${event.title}\n${event.url}` : p.title ? `${p.title}\n${p.url}` : p.origin;
   return [
     "🦊 Nueva tarea",
-    event ? `${event.title}\n${event.url}` : p.origin,
+    header,
     "",
     `Repo: ${p.repo}`,
     `Workflow: ${p.workflowName}`,

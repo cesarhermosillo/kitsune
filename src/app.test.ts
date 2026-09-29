@@ -53,6 +53,8 @@ test("evento nuevo con propuesta crea proposal pendiente y la envía", async () 
   assert.equal(p.workflowId, "wf-1");
   assert.equal(p.origin, "clickup:t1");
   assert.equal(p.telegramMessageId, 101);
+  assert.equal(p.title, EVENT.title);
+  assert.equal(p.url, EVENT.url);
   assert.deepEqual(h.log, [`proposal:${p.id}`]);
 });
 
@@ -203,7 +205,7 @@ test("respuesta a una pregunta de sesión se reenvía a Ronin", async () => {
     channel: { sendNotice: async (t: string) => { h.log.push(`notice:${t}`); return 1; } } as unknown as Channel,
   });
   h.store.saveEvent(EVENT, 1);
-  const p = h.store.createProposal({ eventId: EVENT.id, repo: "todo-api", workflowId: "wf-1", workflowName: "plan-tdd-evidencia", request: "x", origin: "clickup:t1" }, 1);
+  const p = h.store.createProposal({ eventId: EVENT.id, repo: "todo-api", workflowId: "wf-1", workflowName: "plan-tdd-evidencia", request: "x", origin: "clickup:t1", title: "Rechazar títulos vacíos", url: "https://app.clickup.com/t/t1" }, 1);
   h.store.trackSession("cowork-valida", p.id);
   h.store.updateSession("cowork-valida", { questionMessageId: 300 });
   await h.app.onChannelEvent({ type: "message", chatId: 42, messageId: 301, text: "sí, sigue", replyToMessageId: 300 });
@@ -288,7 +290,7 @@ test("C1: un mensaje de un chat ajeno se ignora y se audita", async () => {
 test("C1: si responder a la sesión falla se envía el aviso ⚠️", async () => {
   const h = harness({ reply: async () => { throw new RoninError("SESSION_NOT_WAITING", "la sesión no está esperando una respuesta"); } });
   h.store.saveEvent(EVENT, 1);
-  const p = h.store.createProposal({ eventId: EVENT.id, repo: "todo-api", workflowId: "wf-1", workflowName: "plan-tdd-evidencia", request: "x", origin: "clickup:t1" }, 1);
+  const p = h.store.createProposal({ eventId: EVENT.id, repo: "todo-api", workflowId: "wf-1", workflowName: "plan-tdd-evidencia", request: "x", origin: "clickup:t1", title: "Rechazar títulos vacíos", url: "https://app.clickup.com/t/t1" }, 1);
   h.store.trackSession("cowork-valida", p.id);
   h.store.updateSession("cowork-valida", { questionMessageId: 300 });
   await h.app.onChannelEvent({ type: "message", chatId: 42, messageId: 301, text: "sí", replyToMessageId: 300 });

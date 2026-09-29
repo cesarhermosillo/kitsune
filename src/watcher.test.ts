@@ -11,7 +11,7 @@ const base: SessionStatus = { name: "cowork-a", workflow: "w", stage: "implement
 function setup(statuses: () => SessionStatus[]) {
   const store = openStore(":memory:");
   store.saveEvent({ source: "clickup", id: "e", kind: "task_assigned", title: "", body: "", url: "", author: "", at: "", meta: { taskId: "", listId: "", listName: "", tags: [] } }, 1);
-  const p = store.createProposal({ eventId: "e", repo: "r", workflowId: "w", workflowName: "w", request: "x", origin: "clickup:1" }, 1);
+  const p = store.createProposal({ eventId: "e", repo: "r", workflowId: "w", workflowName: "w", request: "x", origin: "clickup:1", title: "", url: "" }, 1);
   store.trackSession("cowork-a", p.id);
   const log: string[] = [];
   const receivedOptions: (string[] | undefined)[] = [];

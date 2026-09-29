@@ -21,7 +21,7 @@ export interface SessionStatus {
 export type ProposalStatus = "pending" | "approved" | "launched" | "failed" | "rejected" | "expired";
 export interface Proposal {
   id: string; eventId: string; repo: string; workflowId: string; workflowName: string;
-  request: string; origin: string; status: ProposalStatus;
+  request: string; origin: string; title: string; url: string; status: ProposalStatus;
   telegramMessageId: number | null; createdAt: number; updatedAt: number;
   sessionName: string | null; error: string | null;
 }

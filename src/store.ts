@@ -7,7 +7,7 @@ export interface TrackedSession {
   name: string; proposalId: string; lastQuestion: string | null; lastGate: string | null;
   questionMessageId: number | null; notifiedDone: boolean;
 }
-export interface NewProposal { eventId: string; repo: string; workflowId: string; workflowName: string; request: string; origin: string }
+export interface NewProposal { eventId: string; repo: string; workflowId: string; workflowName: string; request: string; origin: string; title: string; url: string }
 export interface Store {
   hasEvent(id: string): boolean;
   saveEvent(event: InboxEvent, now: number): void;
@@ -37,7 +37,7 @@ export interface Store {
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, source TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, seen_at INTEGER NOT NULL, triage_json TEXT, triage_status TEXT);
-CREATE TABLE IF NOT EXISTS proposals (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, repo TEXT NOT NULL, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, request TEXT NOT NULL, origin TEXT NOT NULL, status TEXT NOT NULL, telegram_message_id INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, session_name TEXT, error TEXT);
+CREATE TABLE IF NOT EXISTS proposals (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, repo TEXT NOT NULL, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, request TEXT NOT NULL, origin TEXT NOT NULL, status TEXT NOT NULL, telegram_message_id INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, session_name TEXT, error TEXT, title TEXT, url TEXT);
 CREATE TABLE IF NOT EXISTS sessions (name TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, last_question TEXT, last_gate TEXT, question_message_id INTEGER, notified_done INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS pending_edits (message_id INTEGER PRIMARY KEY, proposal_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS cursors (source TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -50,7 +50,10 @@ function toProposal(row: Row): Proposal {
   return {
     id: String(row.id), eventId: String(row.event_id), repo: String(row.repo),
     workflowId: String(row.workflow_id), workflowName: String(row.workflow_name),
-    request: String(row.request), origin: String(row.origin), status: row.status as ProposalStatus,
+    request: String(row.request), origin: String(row.origin),
+    title: row.title === null || row.title === undefined ? "" : String(row.title),
+    url: row.url === null || row.url === undefined ? "" : String(row.url),
+    status: row.status as ProposalStatus,
     telegramMessageId: row.telegram_message_id === null ? null : Number(row.telegram_message_id),
     createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
     sessionName: row.session_name === null ? null : String(row.session_name),
@@ -73,10 +76,18 @@ function newId(): string {
   return [...randomBytes(10)].map((b) => alphabet[b % alphabet.length]).join("");
 }
 
+/** Añade una columna si falta (bases creadas antes de que existiera), detectado con PRAGMA table_info. */
+function ensureColumn(db: DatabaseSync, table: string, column: string, ddl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Row[];
+  if (!cols.some((c) => String(c.name) === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+
 export function openStore(path: string): Store {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(SCHEMA);
+  ensureColumn(db, "proposals", "title", "title TEXT");
+  ensureColumn(db, "proposals", "url", "url TEXT");
 
   const getProposal = (id: string): Proposal | null => {
     const row = db.prepare("SELECT * FROM proposals WHERE id = ?").get(id) as Row | undefined;
@@ -98,9 +109,9 @@ export function openStore(path: string): Store {
     },
     createProposal: (input, now) => {
       const id = newId();
-      db.prepare(`INSERT INTO proposals (id, event_id, repo, workflow_id, workflow_name, request, origin, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`)
-        .run(id, input.eventId, input.repo, input.workflowId, input.workflowName, input.request, input.origin, now, now);
+      db.prepare(`INSERT INTO proposals (id, event_id, repo, workflow_id, workflow_name, request, origin, title, url, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`)
+        .run(id, input.eventId, input.repo, input.workflowId, input.workflowName, input.request, input.origin, input.title, input.url, now, now);
       return getProposal(id)!;
     },
     getProposal,

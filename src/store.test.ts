@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { InvalidTransition } from "./proposals.js";
 import { openStore } from "./store.js";
@@ -12,7 +13,7 @@ const EVENT: InboxEvent = {
   url: "https://app.clickup.com/t/86abc", author: "ana", at: "2026-09-28T10:00:00.000Z",
   meta: { taskId: "86abc", listId: "901", listName: "Backlog", tags: [] },
 };
-const NEW = { eventId: EVENT.id, repo: "todo-api", workflowId: "wf-1", workflowName: "plan-tdd-evidencia", request: "valida", origin: "clickup:86abc" };
+const NEW = { eventId: EVENT.id, repo: "todo-api", workflowId: "wf-1", workflowName: "plan-tdd-evidencia", request: "valida", origin: "clickup:86abc", title: "Valida títulos", url: "https://app.clickup.com/t/86abc" };
 
 test("eventos: hasEvent y saveEvent", () => {
   const store = openStore(":memory:");
@@ -103,6 +104,23 @@ test("los datos sobreviven a reabrir la base", () => {
     assert.equal(b.hasEvent(EVENT.id), true);
     assert.equal(b.getProposal(p.id)?.status, "pending");
     b.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("C: una base creada antes de title/url migra las columnas con ALTER TABLE", () => {
+  const dir = mkdtempSync(join(tmpdir(), "kitsune-db-"));
+  try {
+    const path = join(dir, "k.db");
+    const raw = new DatabaseSync(path);
+    raw.exec(`CREATE TABLE proposals (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, repo TEXT NOT NULL, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, request TEXT NOT NULL, origin TEXT NOT NULL, status TEXT NOT NULL, telegram_message_id INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, session_name TEXT, error TEXT)`);
+    raw.prepare(`INSERT INTO proposals (id, event_id, repo, workflow_id, workflow_name, request, origin, status, created_at, updated_at) VALUES ('p1','e1','repo','wf-1','name','req','clickup:1','pending',1,1)`).run();
+    raw.close();
+    const store = openStore(path);
+    const p = store.getProposal("p1")!;
+    assert.deepEqual([p.title, p.url], ["", ""]);
+    const created = store.createProposal({ ...NEW, eventId: EVENT.id }, 2);
+    assert.deepEqual([created.title, created.url], [NEW.title, NEW.url]);
+    store.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

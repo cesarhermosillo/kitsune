@@ -6,7 +6,8 @@ import type { InboxEvent, Proposal } from "../types.js";
 
 const P: Proposal = {
   id: "abc123defg", eventId: "task_assigned:t1", repo: "todo-api", workflowId: "wf-1", workflowName: "plan-tdd-evidencia",
-  request: "Valida títulos vacíos", origin: "clickup:t1", status: "pending", telegramMessageId: null,
+  request: "Valida títulos vacíos", origin: "clickup:t1", title: "Rechazar títulos vacíos", url: "https://app.clickup.com/t/t1",
+  status: "pending", telegramMessageId: null,
   createdAt: 1, updatedAt: 1, sessionName: null, error: null,
 };
 const E: InboxEvent = {
@@ -47,6 +48,18 @@ test("parseUpdate descarta callbacks desconocidos y mensajes sin texto", () => {
 test("renderProposal muestra tarea, repo, workflow y petición", () => {
   const text = renderProposal(P, E);
   for (const part of ["Rechazar títulos vacíos", "https://app.clickup.com/t/t1", "todo-api", "plan-tdd-evidencia", "Valida títulos vacíos"]) assert.match(text, new RegExp(part.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")));
+});
+
+test("C: renderProposal(p, null) usa el título y la url guardados en la propuesta", () => {
+  const text = renderProposal(P, null);
+  assert.match(text, /Rechazar títulos vacíos/);
+  assert.match(text, /https:\/\/app\.clickup\.com\/t\/t1/);
+});
+
+test("C: renderProposal(p, null) cae a origin si la propuesta no tiene título/url (filas viejas)", () => {
+  const text = renderProposal({ ...P, title: "", url: "" }, null);
+  assert.match(text, /clickup:t1/);
+  assert.doesNotMatch(text, /Rechazar títulos vacíos/);
 });
 
 test("sendProposal manda los tres botones al chat configurado", async () => {

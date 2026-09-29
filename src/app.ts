@@ -238,7 +238,7 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
       }
       const p = store.createProposal({
         eventId: event.id, repo: triage.repo, workflowId: workflow.id, workflowName: workflow.name,
-        request: triage.request, origin: `clickup:${event.meta.taskId}`,
+        request: triage.request, origin: `clickup:${event.meta.taskId}`, title: event.title, url: event.url,
       }, deps.now());
       // Si Telegram falla, la propuesta queda sin message id y redeliver() la reenvía.
       try { store.setMessageId(p.id, await channel.sendProposal(p, event)); }

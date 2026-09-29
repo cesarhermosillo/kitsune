@@ -2,11 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import meta from "../public/sprites.json";
-import type { ApiDeps } from "./api";
+import type { ApiDeps, ApiResult } from "./api";
 import { getOptions, launchProposal, rejectProposal, retryProposal } from "./api";
 import { startClient } from "./client";
 import { expandedRows } from "./expanded";
-import { choiceLabel, confirmText, flowReducer, LIST, resultText, visibleChoices, type Flow } from "./flow";
+import { choiceLabel, confirmText, createFlowSeq, flowReducer, LIST, resultText, visibleChoices, type Flow } from "./flow";
 import { isOpaqueAt } from "./hit";
 import { applyEvent, applySnapshot, currentAnimation, initialModel, setConnected, summary, type Model } from "./model";
 import { frameIndex } from "./player";
@@ -36,18 +36,23 @@ let animStart = 0;
 let flow: Flow = LIST;
 let bubbleDirty = true;
 let resultTimer: ReturnType<typeof setTimeout> | undefined;
+// F2: cada cambio de flujo sube la secuencia; una respuesta (o el temporizador del resultado)
+// que capturó una secuencia anterior se descarta en vez de pisar un flujo más nuevo.
+const flowSeq = createFlowSeq();
 
 function setFlow(next: Flow) {
   flow = next;
   bubbleDirty = true;
+  const seq = flowSeq.bump();
   clearTimeout(resultTimer);
   if (next.view === "result") {
-    resultTimer = setTimeout(() => setFlow(LIST), 4000);
+    resultTimer = setTimeout(() => { if (flowSeq.isCurrent(seq)) setFlow(LIST); }, 4000);
   }
 }
 
 function closeBubble() {
   clearTimeout(resultTimer);
+  flowSeq.bump();
   flow = LIST;
   bubbleDirty = true;
   expanded = false;
@@ -240,7 +245,10 @@ function renderResultView(f: Extract<Flow, { view: "result" }>) {
 
 // Task 6: dispara la llamada a la API correspondiente a un botón de la burbuja y
 // avanza `flow` con flowReducer en cada paso (busy → resultado).
-function finish(r: any) {
+// F2: `seq` es la secuencia capturada justo después de entrar en busy; si el flujo cambió
+// durante el await (cierre de la burbuja, otra acción), la respuesta se descarta.
+function finish(seq: number, r: ApiResult<{ status: string; sessionName?: string }>) {
+  if (!flowSeq.isCurrent(seq)) return;
   const rt = resultText(r);
   setFlow(flowReducer(flow, { type: "done", ok: rt.ok, text: rt.text }));
 }
@@ -252,7 +260,9 @@ async function handleFlowAction(act: string, ds: DOMStringMap) {
       const id = ds.id;
       if (!id) return;
       setFlow(flowReducer(flow, { type: "busy", label: "Cargando workflows…" }));
+      const seq = flowSeq.current();
       const r = await getOptions(apiDeps, id);
+      if (!flowSeq.isCurrent(seq)) return;
       if (r.ok) {
         setFlow(
           flowReducer(flow, {
@@ -263,11 +273,12 @@ async function handleFlowAction(act: string, ds: DOMStringMap) {
           })
         );
       } else {
-        finish(r);
+        finish(seq, r);
       }
       break;
     }
     case "reject-ask": {
+      if (flow.view !== "list") return;
       const id = ds.id;
       if (!id) return;
       const title = model.state.pending.find((p) => p.id === id)?.title ?? "";
@@ -279,8 +290,9 @@ async function handleFlowAction(act: string, ds: DOMStringMap) {
       const id = ds.id;
       if (!id) return;
       setFlow(flowReducer(flow, { type: "busy", label: "Lanzando…" }));
+      const seq = flowSeq.current();
       const r = await retryProposal(apiDeps, id);
-      finish(r);
+      finish(seq, r);
       break;
     }
     case "other":
@@ -297,12 +309,14 @@ async function handleFlowAction(act: string, ds: DOMStringMap) {
       const current = flow;
       if (current.kind === "launch") {
         setFlow(flowReducer(flow, { type: "busy", label: "Lanzando…" }));
+        const seq = flowSeq.current();
         const r = await launchProposal(apiDeps, current.proposalId, current.workflow.id);
-        finish(r);
+        finish(seq, r);
       } else {
         setFlow(flowReducer(flow, { type: "busy", label: "Ignorando…" }));
+        const seq = flowSeq.current();
         const r = await rejectProposal(apiDeps, current.proposalId);
-        finish(r);
+        finish(seq, r);
       }
       break;
     }

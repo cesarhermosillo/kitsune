@@ -9,6 +9,7 @@ import {
   choiceLabel,
   confirmText,
   resultText,
+  createFlowSeq,
 } from "./flow";
 
 describe("flowReducer", () => {
@@ -419,5 +420,42 @@ describe("resultText", () => {
     const text = resultText(result);
     expect(text.ok).toBe(false);
     expect(text.text).toBe("⚠️ Workflow not found");
+  });
+
+  it("F3: unreachable (timeout/abort del cliente) no afirma que Kitsune esté caído", () => {
+    const result: ApiResult<{ status: string; sessionName?: string }> = {
+      ok: false,
+      status: 0,
+      code: "unreachable",
+      message: "Kitsune no responde",
+    };
+
+    const text = resultText(result);
+    expect(text.ok).toBe(false);
+    expect(text.text).toBe("⚠️ Sin respuesta de Kitsune; revisa en unos segundos");
+  });
+});
+
+describe("createFlowSeq (F2)", () => {
+  it("una respuesta capturada antes de un cambio de flujo queda obsoleta", () => {
+    const seq = createFlowSeq();
+    const token = seq.bump();
+    expect(seq.isCurrent(token)).toBe(true);
+    seq.bump();
+    expect(seq.isCurrent(token)).toBe(false);
+  });
+
+  it("sin cambios intermedios, la respuesta sigue vigente", () => {
+    const seq = createFlowSeq();
+    seq.bump();
+    const token = seq.current();
+    expect(seq.isCurrent(token)).toBe(true);
+  });
+
+  it("es monótona", () => {
+    const seq = createFlowSeq();
+    const a = seq.bump();
+    const b = seq.bump();
+    expect(b).toBeGreaterThan(a);
   });
 });

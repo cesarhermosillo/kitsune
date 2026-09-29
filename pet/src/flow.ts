@@ -98,5 +98,23 @@ export function resultText(r: ApiResult<{ status: string; sessionName?: string }
   if (r.code === "not_pending") {
     return { ok: false, text: "⚠️ Ya no está vigente" };
   }
+  if (r.code === "unreachable") {
+    // Timeout/abort del cliente: la acción pudo haberse aplicado igual (un lanzamiento tarda).
+    return { ok: false, text: "⚠️ Sin respuesta de Kitsune; revisa en unos segundos" };
+  }
   return { ok: false, text: `⚠️ ${r.message}` };
+}
+
+/**
+ * Secuencia monótona del flujo de la burbuja: cada cambio de flujo (acción del usuario,
+ * cierre de la burbuja) la incrementa. Una respuesta asíncrona solo se aplica si la
+ * secuencia que capturó antes del await sigue siendo la actual.
+ */
+export function createFlowSeq() {
+  let seq = 0;
+  return {
+    bump: (): number => ++seq,
+    current: (): number => seq,
+    isCurrent: (token: number): boolean => token === seq,
+  };
 }

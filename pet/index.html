@@ -5,16 +5,22 @@
     <title>Kitsune</title>
     <style>
       html, body { margin: 0; background: transparent; overflow: hidden; user-select: none; }
-      #bubble { position: absolute; left: 8px; right: 8px; bottom: 136px; max-height: 156px; overflow-y: auto; padding: 6px 8px; border-radius: 8px;
-        background: #161826ee; color: #f2f0ff; font: 12px/1.3 -apple-system, system-ui, sans-serif; display: none;
-        white-space: pre-line; box-sizing: border-box; }
+      /* Burbuja de diálogo: blanca, contorno oscuro y un piquito que señala al zorro. */
+      #bubble { position: absolute; right: 8px; width: max-content; max-width: calc(100% - 16px); bottom: 146px; max-height: 146px; overflow-y: auto; padding: 8px 10px;
+        border: 2px solid #1a1426; border-radius: 12px; background: #ffffff; color: #1a1426;
+        font: 600 12px/1.35 -apple-system, system-ui, sans-serif; display: none; white-space: pre-line; box-sizing: border-box; }
       #bubble.show { display: block; }
-      #bubble a { color: #8ab4ff; }
+      #bubble a { color: #6b4fd6; }
+      #bubble-tail { position: absolute; width: 12px; height: 14px; display: none; pointer-events: none; }
+      #bubble.show + #bubble-tail { display: block; }
+      #bubble-tail::before { content: ""; position: absolute; left: 0; top: 0; border-top: 14px solid #1a1426; border-left: 12px solid transparent; }
+      #bubble-tail::after { content: ""; position: absolute; left: 1px; top: -2px; border-top: 11px solid #ffffff; border-left: 9px solid transparent; }
       canvas { position: absolute; bottom: 0; right: 0; image-rendering: pixelated; }
     </style>
   </head>
   <body>
     <div id="bubble"></div>
+    <div id="bubble-tail"></div>
     <canvas id="pet"></canvas>
     <script type="module" src="/src/main.ts"></script>
   </body>

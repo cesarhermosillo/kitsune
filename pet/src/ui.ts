@@ -10,9 +10,14 @@ export function bubbleText(m: Model, now: number, hovering: boolean): string {
 }
 
 /** I6: la burbuja se apoya 8 px sobre el zorro y usa el alto restante de la ventana (con 8 px de margen). */
-export function bubbleLayout(frameSize: number, scale: number, windowHeight: number): { bottom: number; maxHeight: number } {
-  const bottom = frameSize * scale + 8;
-  return { bottom, maxHeight: Math.max(0, windowHeight - bottom - 8) };
+const TAIL_GAP = 18; // espacio bajo la burbuja para el piquito
+const TAIL_HEIGHT = 14; // el piquito arranca justo en el borde inferior de la burbuja
+
+/** Burbuja de diálogo sobre el zorro: su posición, alto máximo y dónde va el piquito que lo señala. */
+export function bubbleLayout(frameSize: number, scale: number, windowHeight: number): { bottom: number; maxHeight: number; tailBottom: number; tailRight: number } {
+  const size = frameSize * scale;
+  const bottom = size + TAIL_GAP;
+  return { bottom, maxHeight: Math.max(0, windowHeight - bottom - 8), tailBottom: bottom - TAIL_HEIGHT, tailRight: Math.round(size * 0.3) };
 }
 
 /** m2: el canvas solo se redibuja cuando cambia esta clave. */

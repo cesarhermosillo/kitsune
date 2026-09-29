@@ -22,9 +22,9 @@ describe("bubbleText", () => {
 });
 
 describe("bubbleLayout (I6)", () => {
-  test("la burbuja queda 8 px sobre el zorro y ocupa el espacio restante", () => {
-    expect(bubbleLayout(32, 4, 300)).toEqual({ bottom: 136, maxHeight: 156 });
-    expect(bubbleLayout(32, 2, 300)).toEqual({ bottom: 72, maxHeight: 220 });
+  test("la burbuja deja espacio para el piquito y ocupa el espacio restante", () => {
+    expect(bubbleLayout(32, 4, 300)).toEqual({ bottom: 146, maxHeight: 146, tailBottom: 132, tailRight: 38 });
+    expect(bubbleLayout(32, 2, 300)).toEqual({ bottom: 82, maxHeight: 210, tailBottom: 68, tailRight: 19 });
   });
   test("nunca devuelve una altura negativa", () => {
     expect(bubbleLayout(32, 4, 100).maxHeight).toBe(0);

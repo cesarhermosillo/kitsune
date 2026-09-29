@@ -14,6 +14,7 @@ import { bubbleLayout, bubbleText, createGesture, dndFromMenu, drawKey, linkActi
 const API = "http://127.0.0.1:47823";
 const canvas = document.getElementById("pet") as HTMLCanvasElement;
 const bubbleEl = document.getElementById("bubble") as HTMLDivElement;
+const tailEl = document.getElementById("bubble-tail") as HTMLDivElement;
 const ctx = canvas.getContext("2d")!;
 let scale = Number(localStorage.getItem("kitsune-scale") ?? 4);
 let model: Model = initialModel(Date.now());
@@ -31,9 +32,11 @@ function resize() {
   canvas.width = canvas.height = meta.frameSize * scale;
   ctx.imageSmoothingEnabled = false;
   // I6: la burbuja se apoya sobre el zorro según la escala y hace scroll si no cabe.
-  const { bottom, maxHeight } = bubbleLayout(meta.frameSize, scale, window.innerHeight);
+  const { bottom, maxHeight, tailBottom, tailRight } = bubbleLayout(meta.frameSize, scale, window.innerHeight);
   bubbleEl.style.bottom = `${bottom}px`;
   bubbleEl.style.maxHeight = `${maxHeight}px`;
+  tailEl.style.bottom = `${tailBottom}px`;
+  tailEl.style.right = `${tailRight}px`;
 }
 resize();
 window.addEventListener("resize", resize);

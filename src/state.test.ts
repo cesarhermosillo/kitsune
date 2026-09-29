@@ -14,7 +14,7 @@ test("pending sale del store con título, repo y workflow", () => {
   const { store, tracker } = setup();
   store.saveEvent({ source: "clickup", id: "e1", kind: "task_assigned", title: "T", body: "", url: "https://u", author: "", at: "", meta: { taskId: "1", listId: "", listName: "", tags: [] } }, 1);
   const p = store.createProposal({ eventId: "e1", repo: "todo-api", workflowId: "wf-1", workflowName: "plan-tdd", request: "x", origin: "clickup:1", title: "T", url: "https://u" }, 10);
-  assert.deepEqual(tracker.snapshot().pending, [{ id: p.id, title: "T", url: "https://u", repo: "todo-api", workflow: "plan-tdd", createdAt: 10 }]);
+  assert.deepEqual(tracker.snapshot().pending, [{ id: p.id, title: "T", url: "https://u", repo: "todo-api", workflow: "plan-tdd", createdAt: 10, status: "pending" }]);
 });
 
 test("triaging, sesiones, preguntas y lastError siguen al bus", () => {
@@ -75,4 +75,22 @@ test("m4: los datos en vivo mandan sobre la pregunta guardada", () => {
   const [s] = tracker.snapshot().sessions;
   assert.equal(s.needsInput, false);
   assert.equal(s.question, undefined);
+});
+
+test("pending incluye propuestas fallidas recientes con status 'failed'", () => {
+  const store = openStore(":memory:");
+  const now = () => 100_000;
+  const tracker = createStateTracker({ store, bus: createEventBus(now), now });
+  store.saveEvent({ source: "clickup", id: "e1", kind: "task_assigned", title: "T1", body: "", url: "https://u1", author: "", at: "", meta: { taskId: "", listId: "", listName: "", tags: [] } }, 1);
+  store.saveEvent({ source: "clickup", id: "e2", kind: "task_assigned", title: "T2", body: "", url: "https://u2", author: "", at: "", meta: { taskId: "", listId: "", listName: "", tags: [] } }, 2);
+  const p = store.createProposal({ eventId: "e1", repo: "todo-api", workflowId: "wf-1", workflowName: "plan-tdd", request: "x", origin: "clickup:1", title: "T1", url: "https://u1" }, 10);
+  const f = store.createProposal({ eventId: "e2", repo: "todo-api", workflowId: "wf-1", workflowName: "plan-tdd", request: "x", origin: "clickup:2", title: "T2", url: "https://u2" }, 20);
+  const hour24Ms = 24 * 3_600_000;
+  store.transition(f.id, "approved", 25);
+  store.transition(f.id, "failed", now() - 1000, { error: "test error" });
+  const pending = tracker.snapshot().pending;
+  assert.equal(pending.length, 2);
+  const byId = new Map(pending.map((item) => [item.id, item]));
+  assert.equal(byId.get(p.id)?.status, "pending");
+  assert.equal(byId.get(f.id)?.status, "failed");
 });

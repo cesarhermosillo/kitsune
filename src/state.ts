@@ -1,7 +1,7 @@
 import type { EventBus, KitsuneEvent } from "./events.js";
 import type { Store } from "./store.js";
 
-export interface PendingItem { id: string; title: string; url: string; repo: string; workflow: string; createdAt: number }
+export interface PendingItem { id: string; title: string; url: string; repo: string; workflow: string; createdAt: number; status: "pending" | "failed" }
 export interface SessionItem { name: string; stage: string | null; stagesDone: number; stagesTotal: number; needsInput: boolean; question?: string }
 export interface PetState { triaging: boolean; pending: PendingItem[]; sessions: SessionItem[]; lastError: { message: string; at: number } | null }
 export interface StateTracker { snapshot(): PetState; dispose(): void }
@@ -9,10 +9,11 @@ export interface StateTracker { snapshot(): PetState; dispose(): void }
 const MAX = 500;
 const clip = (text: string) => (text.length > MAX ? text.slice(0, MAX) : text);
 
-export function createStateTracker(deps: { store: Store; bus: EventBus }): StateTracker {
+export function createStateTracker(deps: { store: Store; bus: EventBus; now?: () => number }): StateTracker {
   let triaging = false;
   let lastError: PetState["lastError"] = null;
   const live = new Map<string, Omit<SessionItem, "name">>();
+  const now = deps.now ?? (() => Date.now());
 
   const off = deps.bus.subscribe((e: KitsuneEvent) => {
     switch (e.type) {
@@ -33,9 +34,14 @@ export function createStateTracker(deps: { store: Store; bus: EventBus }): State
 
   return {
     snapshot() {
-      const pending = deps.store.listPending().map((p) => ({
-        id: p.id, title: clip(p.title || p.origin), url: clip(p.url), repo: clip(p.repo), workflow: clip(p.workflowName), createdAt: p.createdAt,
+      const hour24Ms = 24 * 3_600_000;
+      const pendingItems = deps.store.listPending().map((p) => ({
+        id: p.id, title: clip(p.title || p.origin), url: clip(p.url), repo: clip(p.repo), workflow: clip(p.workflowName), createdAt: p.createdAt, status: "pending" as const,
       }));
+      const failedItems = deps.store.listRecentFailed(now() - hour24Ms).map((p) => ({
+        id: p.id, title: clip(p.title || p.origin), url: clip(p.url), repo: clip(p.repo), workflow: clip(p.workflowName), createdAt: p.createdAt, status: "failed" as const,
+      }));
+      const pending = [...pendingItems, ...failedItems];
       const sessions = deps.store.listActiveSessions().map((t) => {
         const s = live.get(t.name);
         const item: SessionItem = { name: clip(t.name), stage: s?.stage ?? null, stagesDone: s?.stagesDone ?? 0, stagesTotal: s?.stagesTotal ?? 0, needsInput: s?.needsInput ?? false };

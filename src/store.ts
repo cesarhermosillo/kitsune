@@ -22,6 +22,8 @@ export interface Store {
   listPending(): Proposal[];
   /** Propuestas pendientes que nunca llegaron a Telegram (telegram_message_id NULL). */
   listUndelivered(): Proposal[];
+  /** Propuestas con status='failed' y updated_at >= since, ordenadas por created_at. */
+  listRecentFailed(since: number): Proposal[];
   /** Pasa todas las propuestas en `approved` a `failed` con error "interrumpida" y las devuelve. */
   failInterrupted(now: number): Proposal[];
   trackSession(name: string, proposalId: string): void;
@@ -146,6 +148,7 @@ export function openStore(path: string): Store {
     setMessageId: (id, messageId) => { db.prepare("UPDATE proposals SET telegram_message_id = ? WHERE id = ?").run(messageId, id); },
     listPending: () => (db.prepare("SELECT * FROM proposals WHERE status = 'pending' ORDER BY created_at").all() as Row[]).map(toProposal),
     listUndelivered: () => (db.prepare("SELECT * FROM proposals WHERE status = 'pending' AND telegram_message_id IS NULL ORDER BY created_at").all() as Row[]).map(toProposal),
+    listRecentFailed: (since) => (db.prepare("SELECT * FROM proposals WHERE status = 'failed' AND updated_at >= ? ORDER BY created_at").all(since) as Row[]).map(toProposal),
     failInterrupted: (now) => inTx(() => {
       const ids = (db.prepare("SELECT id FROM proposals WHERE status = 'approved' ORDER BY created_at").all() as Row[]).map((r) => String(r.id));
       db.prepare("UPDATE proposals SET status = 'failed', error = 'interrumpida', updated_at = ? WHERE status = 'approved'").run(now);

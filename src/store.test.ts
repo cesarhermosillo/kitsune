@@ -147,3 +147,30 @@ test("failInterrupted pasa approved a failed con error 'interrumpida' y no toca 
   assert.equal(store.transition(a.id, "approved", 51, undefined, "failed").status, "approved");
   store.close();
 });
+
+test("listRecentFailed incluye propuestas fallidas recientes y excluye las de hace más de 24h", () => {
+  const store = openStore(":memory:");
+  store.saveEvent(EVENT, 1);
+  const p1 = store.createProposal(NEW, 10);
+  const p2 = store.createProposal(NEW, 11);
+  const p3 = store.createProposal(NEW, 12);
+  // Fallar p1 y p2 recientes, p3 vieja
+  const hour24Ms = 24 * 3_600_000;
+  const now = 100_000;
+  store.transition(p1.id, "approved", 20);
+  store.transition(p1.id, "failed", now - hour24Ms / 2, { error: "recent" });
+  store.transition(p2.id, "approved", 21);
+  store.transition(p2.id, "failed", now - 1000, { error: "very recent" });
+  store.transition(p3.id, "approved", 22);
+  store.transition(p3.id, "failed", now - hour24Ms - 1000, { error: "old" });
+  const recent = store.listRecentFailed(now - hour24Ms);
+  // Should be sorted by created_at (p1 = 10, p2 = 11)
+  assert.deepEqual(recent.map((p) => [p.id, p.status, p.error, p.createdAt]), [
+    [p1.id, "failed", "recent", p1.createdAt],
+    [p2.id, "failed", "very recent", p2.createdAt],
+  ]);
+  // Verify p3 is NOT included
+  assert.equal(recent.length, 2);
+  assert(!recent.some((p) => p.id === p3.id));
+  store.close();
+});

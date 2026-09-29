@@ -23,6 +23,37 @@ export interface KitsuneApp {
   recoverInterrupted(): Promise<number>;
   /** Reenvía las propuestas pendientes cuyo envío a Telegram falló (sin message id). Devuelve cuántas se entregaron. */
   redeliver(): Promise<number>;
+  /** Opciones de workflow para lanzar la propuesta (mascota): sugerido + favoritos en `main`, el resto en `other`. */
+  workflowOptions(id: string): Promise<OptionsResult>;
+  /** Lanza la propuesta con el workflow elegido por id. Mismo candado que el ✅ de Telegram: una sesión como máximo. */
+  launchProposal(id: string, workflowId: string, via: Via): Promise<LaunchResult>;
+  rejectProposal(id: string, via: Via): Promise<RejectResult>;
+  retryProposal(id: string, via: Via): Promise<LaunchResult>;
+}
+
+export type Via = "pet" | "telegram";
+export interface WorkflowChoice { id: string; name: string; suggested: boolean; favorite: boolean; dangerous: boolean; group: "main" | "other" }
+export type ActionErrorCode = "not_found" | "not_pending" | "expired" | "unknown_workflow" | "ronin_unavailable" | "launch_failed";
+export type ActionError = { ok: false; code: ActionErrorCode; message: string };
+export type LaunchResult = { ok: true; status: "launched"; sessionName: string } | ActionError;
+export type RejectResult = { ok: true; status: "rejected" } | ActionError;
+export type OptionsResult = { ok: true; title: string; choices: WorkflowChoice[] } | ActionError;
+
+const ACTION_MESSAGES: Record<Exclude<ActionErrorCode, "launch_failed">, string> = {
+  not_found: "La propuesta no existe",
+  not_pending: "Ya no está vigente",
+  expired: "Expirada",
+  unknown_workflow: "Ese workflow ya no existe en Ronin",
+  ronin_unavailable: "Ronin no responde, intenta de nuevo",
+};
+const actionError = (code: Exclude<ActionErrorCode, "launch_failed">): ActionError => ({ ok: false, code, message: ACTION_MESSAGES[code] });
+
+/** Valida existencia y estado antes de actuar: not_found, expired, o not_pending si no está en `required`. */
+function checkState(p: Proposal | null, required: Proposal["status"]): ActionError | null {
+  if (!p) return actionError("not_found");
+  if (p.status === "expired") return actionError("expired");
+  if (p.status !== required) return actionError("not_pending");
+  return null;
 }
 
 const clip = (text: string, max = 500) => (text.length > max ? `${text.slice(0, max)}…` : text);
@@ -32,22 +63,37 @@ const hasMergeDeploy = (w: CatalogWorkflow): boolean => w.stages.includes("merge
 const workflowLabel = (w: CatalogWorkflow, suggested: boolean): string =>
   `${suggested ? "⭐ " : ""}${w.name}${hasMergeDeploy(w) ? " ⚠️ merge/deploy" : ""}`;
 
-/** Selector inicial de ✅ Lanzar: el sugerido (primero si no es favorito) + los favoritos presentes en el catálogo, en su orden. */
-function favoriteWorkflowOptions(p: Proposal, catalog: Catalog, favorites: string[]): WorkflowOption[] {
+/** Índices del catálogo para el selector inicial: el sugerido (primero si no es favorito) + los favoritos presentes, en su orden. */
+function mainWorkflowIndices(p: Proposal, catalog: Catalog, favorites: string[]): number[] {
   const indexByName = new Map(catalog.workflows.map((w, i) => [w.name, i] as const));
   const favoriteNames = favorites.filter((name) => indexByName.has(name));
-  const options: WorkflowOption[] = [];
+  const indices: number[] = [];
   const suggestedIndex = indexByName.get(p.workflowName);
-  if (suggestedIndex !== undefined && !favoriteNames.includes(p.workflowName)) {
-    const w = catalog.workflows[suggestedIndex];
-    options.push({ index: suggestedIndex, label: workflowLabel(w, true), check: workflowCheck(w.name) });
-  }
+  if (suggestedIndex !== undefined && !favoriteNames.includes(p.workflowName)) indices.push(suggestedIndex);
   for (const name of favoriteNames) {
-    const index = indexByName.get(name)!;
-    const w = catalog.workflows[index];
-    options.push({ index, label: workflowLabel(w, name === p.workflowName), check: workflowCheck(w.name) });
+    indices.push(indexByName.get(name)!);
   }
-  return options;
+  return indices;
+}
+
+/** Selector inicial de ✅ Lanzar (Telegram). */
+function favoriteWorkflowOptions(p: Proposal, catalog: Catalog, favorites: string[]): WorkflowOption[] {
+  return mainWorkflowIndices(p, catalog, favorites).map((index) => {
+    const w = catalog.workflows[index];
+    return { index, label: workflowLabel(w, w.name === p.workflowName), check: workflowCheck(w.name) };
+  });
+}
+
+/** Opciones para la mascota: mismo `main` que el selector de Telegram; `other` = el resto del catálogo en su orden. */
+function workflowChoices(p: Proposal, catalog: Catalog, favorites: string[]): WorkflowChoice[] {
+  const main = mainWorkflowIndices(p, catalog, favorites);
+  const choice = (w: CatalogWorkflow, group: WorkflowChoice["group"]): WorkflowChoice => ({
+    id: w.id, name: w.name, suggested: w.name === p.workflowName, favorite: favorites.includes(w.name), dangerous: hasMergeDeploy(w), group,
+  });
+  return [
+    ...main.map((i) => choice(catalog.workflows[i], "main")),
+    ...catalog.workflows.filter((_, i) => !main.includes(i)).map((w) => choice(w, "other")),
+  ];
 }
 
 /** Pantalla "Otro…": todo el catálogo, mismo formato de etiquetas. */
@@ -158,6 +204,55 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
     await edit(updated, `✅ Sesión ${sessionName} creada`);
   }
 
+  /** Tras launch(), el resultado se lee del store: launched → sessionName; si no, launch_failed con el error guardado. */
+  function launchOutcome(id: string): LaunchResult {
+    const after = store.getProposal(id);
+    if (after?.status === "launched" && after.sessionName) return { ok: true, status: "launched", sessionName: after.sessionName };
+    return { ok: false, code: "launch_failed", message: after?.error || "No se pudo lanzar" };
+  }
+
+  /**
+   * Candado único para ambos canales: `store.approveWith` es una transacción síncrona pending → approved;
+   * solo un llamador la gana y el resto recibe InvalidTransition (que el llamador traduce). Nunca dos sesiones por propuesta.
+   */
+  async function launchWith(p: Proposal, wf: CatalogWorkflow, via: Via): Promise<LaunchResult> {
+    const approved = store.approveWith(p.id, { workflowId: wf.id, workflowName: wf.name }, deps.now());
+    store.audit("user", "launch", p.id, { via, workflow: wf.name }, deps.now());
+    await launch(approved);
+    return launchOutcome(p.id);
+  }
+
+  /** failed → approved (atómico, desde `failed`) y relanza. Lanza InvalidTransition si otro canal ganó. */
+  async function doRetry(p: Proposal, via: Via): Promise<LaunchResult> {
+    const approved = store.transition(p.id, "approved", deps.now(), undefined, "failed");
+    store.audit("user", "retry", p.id, { via }, deps.now());
+    await launch(approved);
+    return launchOutcome(p.id);
+  }
+
+  /** pending → rejected (atómico, desde `pending`). Lanza InvalidTransition si otro canal ganó. */
+  async function doReject(p: Proposal, via: Via): Promise<RejectResult> {
+    const rejected = store.transition(p.id, "rejected", deps.now(), undefined, "pending");
+    store.audit("user", "reject", p.id, { via }, deps.now());
+    emit({ type: "proposal_resolved", id: p.id, status: "rejected" });
+    await edit(rejected, "❌ Ignorada");
+    return { ok: true, status: "rejected" };
+  }
+
+  /** Ejecuta una acción de estado; una InvalidTransition (carrera con otro canal) se vuelve not_pending. */
+  async function guarded<T>(action: () => Promise<T>): Promise<T | ActionError> {
+    try { return await action(); }
+    catch (error) {
+      if (error instanceof InvalidTransition) return actionError("not_pending");
+      throw error;
+    }
+  }
+
+  async function catalogOrNull(): Promise<Catalog | null> {
+    try { return await deps.ronin.catalog(); }
+    catch (error) { log(`[acciones] catalog falló: ${errorText(error)}`); return null; }
+  }
+
   /** Tras editar, se envía un mensaje nuevo; el encabezado usa p.origin porque el evento ya no está en memoria. */
   async function repropose(p: Proposal): Promise<void> {
     try { store.setMessageId(p.id, await channel.sendProposal(p, null)); }
@@ -203,23 +298,20 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
           const wf = catalog.workflows[event.index ?? -1];
           if (!wf || workflowCheck(wf.name) !== event.check) { await ack(event.callbackId, "Opción inválida, vuelve a tocar ✅"); return; }
           await ack(event.callbackId, "Lanzando…");
-          const approved = store.approveWith(p.id, { workflowId: wf.id, workflowName: wf.name }, deps.now());
-          await launch(approved);
-          if (store.getProposal(p.id)?.status === "launched") await editSelector(event.messageId, `🚀 Lanzada con ${wf.name}`);
+          const result = await launchWith(p, wf, "telegram");
+          if (result.ok) await editSelector(event.messageId, `🚀 Lanzada con ${wf.name}`);
           return;
         }
         case "retry": {
           expect(p, "failed");
           await ack(event.callbackId, "Lanzando…");
-          await launch(store.transition(p.id, "approved", deps.now(), undefined, "failed"));
+          await doRetry(p, "telegram");
           return;
         }
         case "reject": {
           expect(p, "pending");
           await ack(event.callbackId, "Ignorada");
-          const rejected = store.transition(p.id, "rejected", deps.now(), undefined, "pending");
-          emit({ type: "proposal_resolved", id: p.id, status: "rejected" });
-          await edit(rejected, "❌ Ignorada");
+          await doReject(p, "telegram");
           return;
         }
         case "edit": {
@@ -374,6 +466,36 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
         }
       }
       return delivered;
+    },
+    async workflowOptions(id) {
+      const p = store.getProposal(id);
+      const invalid = checkState(p, "pending");
+      if (invalid) return invalid;
+      const catalog = await catalogOrNull();
+      if (!catalog) return actionError("ronin_unavailable");
+      return { ok: true, title: p!.title || p!.origin, choices: workflowChoices(p!, catalog, deps.favoriteWorkflows) };
+    },
+    async launchProposal(id, workflowId, via) {
+      const p = store.getProposal(id);
+      const invalid = checkState(p, "pending");
+      if (invalid) return invalid;
+      const catalog = await catalogOrNull();
+      if (!catalog) return actionError("ronin_unavailable");
+      const wf = catalog.workflows.find((w) => w.id === workflowId);
+      if (!wf) return actionError("unknown_workflow");
+      return guarded(() => launchWith(p!, wf, via));
+    },
+    async rejectProposal(id, via) {
+      const p = store.getProposal(id);
+      const invalid = checkState(p, "pending");
+      if (invalid) return invalid;
+      return guarded(() => doReject(p!, via));
+    },
+    async retryProposal(id, via) {
+      const p = store.getProposal(id);
+      const invalid = checkState(p, "failed");
+      if (invalid) return invalid;
+      return guarded(() => doRetry(p!, via));
     },
   };
 }

@@ -603,3 +603,224 @@ test("proposal_resolved expired al expirar la propuesta", async () => {
   assert.equal(resolved.length, 1);
   assert.equal(resolved[0].status, "expired");
 });
+
+// ── Acciones compartidas (mascota + Telegram) ──
+
+const DANGER_CATALOG: Catalog = { repos: CATALOG.repos, workflows: [
+  { id: "wf-1", name: "plan-tdd-evidencia", stages: [] },
+  { id: "wf-2", name: "hotfix", stages: ["build", "merge"] },
+  { id: "wf-3", name: "pr-review-merge-dev", stages: ["review", "merge"] },
+  { id: "wf-4", name: "claude-plan-codex-impl", stages: [] },
+] };
+
+test("workflowOptions: sugerido y favoritos en main, resto en other, con dangerous", async () => {
+  const h = harness({ favoriteWorkflows: ["hotfix"], catalog: () => DANGER_CATALOG });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  const r = await h.app.workflowOptions(p.id);
+  assert.deepEqual(r, { ok: true, title: "Rechazar títulos vacíos", choices: [
+    { id: "wf-1", name: "plan-tdd-evidencia", suggested: true, favorite: false, dangerous: false, group: "main" },
+    { id: "wf-2", name: "hotfix", suggested: false, favorite: true, dangerous: true, group: "main" },
+    { id: "wf-3", name: "pr-review-merge-dev", suggested: false, favorite: false, dangerous: true, group: "other" },
+    { id: "wf-4", name: "claude-plan-codex-impl", suggested: false, favorite: false, dangerous: false, group: "other" },
+  ] });
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+  assert.equal(h.launches.length, 0);
+});
+
+test("workflowOptions: el sugerido favorito va en la posición de favoritos; sin title usa origin; Ronin caído → ronin_unavailable", async () => {
+  let down = false;
+  const h = harness({ favoriteWorkflows: ["hotfix", "plan-tdd-evidencia", "borrado"], catalog: () => { if (down) throw new RoninError("UNREACHABLE", "Ronin no responde"); return CATALOG; } });
+  await h.app.onInboxEvent({ ...EVENT, title: "" });
+  const [p] = h.store.listPending();
+  const r = await h.app.workflowOptions(p.id);
+  assert.ok(r.ok);
+  assert.equal(r.title, "clickup:t1");
+  assert.deepEqual(r.choices.filter((c) => c.group === "main").map((c) => [c.name, c.suggested, c.favorite]),
+    [["hotfix", false, true], ["plan-tdd-evidencia", true, true]]);
+  assert.deepEqual(r.choices.filter((c) => c.group === "other").map((c) => c.name), ["pr-review-merge-dev", "claude-plan-codex-impl"]);
+  down = true;
+  assert.deepEqual(await h.app.workflowOptions(p.id), { ok: false, code: "ronin_unavailable", message: "Ronin no responde, intenta de nuevo" });
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+});
+
+test("launchProposal por id lanza una vez y deja la propuesta launched", async () => {
+  const c = captured();
+  const h = harness({ events: c.bus });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  const r = await h.app.launchProposal(p.id, "wf-2", "pet");
+  assert.deepEqual(r, { ok: true, status: "launched", sessionName: "cowork-valida" });
+  assert.equal(h.launches.length, 1);
+  assert.equal((h.launches[0] as { workflowId: string }).workflowId, "wf-2");
+  const after = h.store.getProposal(p.id)!;
+  assert.deepEqual([after.status, after.workflowId, after.workflowName, after.sessionName], ["launched", "wf-2", "hotfix", "cowork-valida"]);
+  assert.ok(h.log.includes("update:launched:✅ Sesión cowork-valida creada"));
+  const resolved = c.events.filter((e) => e.type === "proposal_resolved") as Extract<KitsuneEvent, { type: "proposal_resolved" }>[];
+  assert.deepEqual(resolved.map((e) => e.status), ["launched"]);
+});
+
+test("launchProposal con workflowId inexistente → unknown_workflow y la propuesta sigue pending", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  assert.deepEqual(await h.app.launchProposal(p.id, "wf-borrado", "pet"), { ok: false, code: "unknown_workflow", message: "Ese workflow ya no existe en Ronin" });
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+  assert.equal(h.launches.length, 0);
+});
+
+test("launchProposal con Ronin caído en catalog → ronin_unavailable y sigue pending", async () => {
+  let down = false;
+  const h = harness({ catalog: () => { if (down) throw new RoninError("UNREACHABLE", "Ronin no responde"); return CATALOG; } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  down = true;
+  assert.deepEqual(await h.app.launchProposal(p.id, "wf-1", "pet"), { ok: false, code: "ronin_unavailable", message: "Ronin no responde, intenta de nuevo" });
+  const after = h.store.getProposal(p.id)!;
+  assert.deepEqual([after.status, after.workflowId], ["pending", "wf-1"]);
+  assert.equal(h.launches.length, 0);
+});
+
+test("launchProposal cuando createSession falla → launch_failed y la propuesta queda failed", async () => {
+  const h = harness({ launch: async () => { throw new RoninError("UNREACHABLE", "Ronin no responde"); } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  assert.deepEqual(await h.app.launchProposal(p.id, "wf-1", "pet"), { ok: false, code: "launch_failed", message: "Ronin no responde" });
+  assert.equal(h.store.getProposal(p.id)?.status, "failed");
+  assert.equal(h.launches.length, 1);
+  assert.ok(h.log.some((l) => l.startsWith("update:failed:⚠️ No se pudo lanzar: Ronin no responde")));
+});
+
+test("doble lanzamiento entre canales: API y luego ✅ de Telegram → una sola sesión", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  assert.equal((await h.app.launchProposal(p.id, "wf-1", "pet")).ok, true);
+  await h.app.onChannelEvent(launchWith(p.id, 1));
+  assert.equal(h.launches.length, 1);
+  assert.ok(h.log.includes("ack:Ya no está vigente"));
+  assert.equal(h.store.getProposal(p.id)?.workflowId, "wf-1");
+  // La API otra vez tampoco lanza.
+  assert.deepEqual(await h.app.launchProposal(p.id, "wf-1", "pet"), { ok: false, code: "not_pending", message: "Ya no está vigente" });
+  assert.equal(h.launches.length, 1);
+});
+
+test("doble lanzamiento entre canales: ✅ de Telegram y luego API → not_pending", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(launchWith(p.id, 1));
+  assert.equal(h.store.getProposal(p.id)?.status, "launched");
+  assert.deepEqual(await h.app.launchProposal(p.id, "wf-1", "pet"), { ok: false, code: "not_pending", message: "Ya no está vigente" });
+  assert.equal(h.launches.length, 1);
+  assert.equal(h.store.getProposal(p.id)?.workflowId, "wf-2");
+});
+
+test("doble lanzamiento concurrente (API y Telegram a la vez, mientras se lee el catálogo) → una sola sesión", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  const [api, api2] = await Promise.all([
+    h.app.launchProposal(p.id, "wf-1", "pet"),
+    h.app.launchProposal(p.id, "wf-2", "pet"),
+    h.app.onChannelEvent(launchWith(p.id, 1)),
+  ]);
+  assert.equal(h.launches.length, 1);
+  assert.equal(h.store.getProposal(p.id)?.status, "launched");
+  assert.deepEqual([api.ok, api2.ok], [true, false]);
+  assert.deepEqual(api2, { ok: false, code: "not_pending", message: "Ya no está vigente" });
+});
+
+test("rejectProposal ignora, edita Telegram y emite proposal_resolved rejected; segunda vez → not_pending", async () => {
+  const c = captured();
+  const h = harness({ events: c.bus });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  assert.deepEqual(await h.app.rejectProposal(p.id, "pet"), { ok: true, status: "rejected" });
+  assert.equal(h.store.getProposal(p.id)?.status, "rejected");
+  assert.ok(h.log.includes("update:rejected:❌ Ignorada"));
+  const resolved = c.events.filter((e) => e.type === "proposal_resolved") as Extract<KitsuneEvent, { type: "proposal_resolved" }>[];
+  assert.deepEqual(resolved.map((e) => e.status), ["rejected"]);
+  assert.deepEqual(await h.app.rejectProposal(p.id, "pet"), { ok: false, code: "not_pending", message: "Ya no está vigente" });
+  assert.equal(c.events.filter((e) => e.type === "proposal_resolved").length, 1);
+  // Y el ✅ de Telegram ya no lanza.
+  await h.app.onChannelEvent(launchWith(p.id, 0));
+  assert.equal(h.launches.length, 0);
+});
+
+test("retryProposal solo desde failed; desde pending → not_pending", async () => {
+  let fail = true;
+  const h = harness({ launch: async () => { if (fail) throw new RoninError("UNREACHABLE", "Ronin no responde"); return { name: "cowork-valida" }; } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  assert.deepEqual(await h.app.retryProposal(p.id, "pet"), { ok: false, code: "not_pending", message: "Ya no está vigente" });
+  assert.equal(h.launches.length, 0);
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+  assert.deepEqual(await h.app.launchProposal(p.id, "wf-1", "pet"), { ok: false, code: "launch_failed", message: "Ronin no responde" });
+  assert.equal(h.launches.length, 1);
+  // Reintento que vuelve a fallar → launch_failed y sigue failed.
+  assert.deepEqual(await h.app.retryProposal(p.id, "pet"), { ok: false, code: "launch_failed", message: "Ronin no responde" });
+  assert.equal(h.launches.length, 2);
+  assert.equal(h.store.getProposal(p.id)?.status, "failed");
+  fail = false;
+  assert.deepEqual(await h.app.retryProposal(p.id, "pet"), { ok: true, status: "launched", sessionName: "cowork-valida" });
+  assert.equal(h.launches.length, 3);
+  assert.equal(h.store.getProposal(p.id)?.status, "launched");
+  // Ya lanzada: ni retry ni el 🔁 de Telegram vuelven a lanzar.
+  assert.deepEqual(await h.app.retryProposal(p.id, "pet"), { ok: false, code: "not_pending", message: "Ya no está vigente" });
+  await h.app.onChannelEvent(cb("retry", p.id));
+  assert.equal(h.launches.length, 3);
+});
+
+test("propuesta inexistente → not_found; expirada → expired", async () => {
+  const h = harness();
+  const notFound = { ok: false, code: "not_found", message: "La propuesta no existe" };
+  assert.deepEqual(await h.app.workflowOptions("nope"), notFound);
+  assert.deepEqual(await h.app.launchProposal("nope", "wf-1", "pet"), notFound);
+  assert.deepEqual(await h.app.rejectProposal("nope", "pet"), notFound);
+  assert.deepEqual(await h.app.retryProposal("nope", "pet"), notFound);
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  h.advance(60_001);
+  await h.app.sweepExpired();
+  const expired = { ok: false, code: "expired", message: "Expirada" };
+  assert.deepEqual(await h.app.workflowOptions(p.id), expired);
+  assert.deepEqual(await h.app.launchProposal(p.id, "wf-1", "pet"), expired);
+  assert.deepEqual(await h.app.rejectProposal(p.id, "pet"), expired);
+  assert.deepEqual(await h.app.retryProposal(p.id, "pet"), expired);
+  assert.equal(h.launches.length, 0);
+  assert.equal(h.store.getProposal(p.id)?.status, "expired");
+});
+
+test("audita via pet/telegram", async () => {
+  let fail = true;
+  const h = harness({ launch: async () => { if (fail) throw new RoninError("UNREACHABLE", "Ronin no responde"); return { name: "cowork-valida" }; } });
+  await h.app.onInboxEvent(EVENT);
+  await h.app.onInboxEvent({ ...EVENT, id: "task_assigned:t2" });
+  await h.app.onInboxEvent({ ...EVENT, id: "task_assigned:t3" });
+  await h.app.onInboxEvent({ ...EVENT, id: "task_assigned:t4" });
+  const [a, b, c, d] = h.store.listPending();
+  const userAudit = () => h.store.listAudit(100).filter((x) => x.actor === "user" && ["launch", "reject", "retry"].includes(x.action) && (x.detail as { via?: string }).via !== undefined)
+    .map((x) => [x.action, x.target, x.detail]);
+  await h.app.launchProposal(a.id, "wf-2", "pet");
+  await h.app.onChannelEvent(launchWith(b.id, 0));
+  fail = false;
+  await h.app.retryProposal(a.id, "pet");
+  await h.app.onChannelEvent(cb("retry", b.id));
+  await h.app.rejectProposal(c.id, "pet");
+  await h.app.onChannelEvent(cb("reject", d.id));
+  const rows = userAudit();
+  const expected = [
+    ["launch", a.id, { via: "pet", workflow: "hotfix" }],
+    ["launch", b.id, { via: "telegram", workflow: "plan-tdd-evidencia" }],
+    ["retry", a.id, { via: "pet" }],
+    ["retry", b.id, { via: "telegram" }],
+    ["reject", c.id, { via: "pet" }],
+    ["reject", d.id, { via: "telegram" }],
+  ];
+  for (const row of expected) assert.ok(rows.some((r) => JSON.stringify(r) === JSON.stringify(row)), `falta ${JSON.stringify(row)} en ${JSON.stringify(rows)}`);
+  assert.equal(rows.length, expected.length);
+  // Una acción rechazada (no vigente) no se audita como acción hecha.
+  await h.app.rejectProposal(c.id, "pet");
+  assert.equal(userAudit().length, expected.length);
+});

@@ -8,3 +8,7 @@ dist/
 # ~/.gitignore_global ignora "docs"; en este repo sí se publica
 !docs/
 .superpowers/
+
+pet/node_modules/
+pet/dist/
+pet/src-tauri/target/

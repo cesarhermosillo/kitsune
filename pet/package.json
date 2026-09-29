@@ -10,7 +10,8 @@
     "sprites": "tsx art/build-sprites.ts",
     "preview": "npm run sprites && vite --open /preview.html",
     "tauri": "tauri",
-    "contact-sheet": "tsx art/contact-sheet.ts"
+    "contact-sheet": "tsx art/contact-sheet.ts",
+    "readme-shots": "tsx scripts/readme-shots/capture.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.0"

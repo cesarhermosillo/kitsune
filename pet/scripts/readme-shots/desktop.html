@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>Kitsune — README shot</title>
+    <style>
+      /* Fondo tipo escritorio detrás de la ventana transparente del pet (220×300, como en tauri.conf.json). */
+      html, body { margin: 0; height: 100%; overflow: hidden; }
+      body { background: radial-gradient(circle at 20% 15%, #9fb8ff 0%, transparent 55%),
+                         radial-gradient(circle at 85% 90%, #f3a6c8 0%, transparent 50%),
+                         linear-gradient(160deg, #5b6cc9 0%, #8a6fd1 55%, #c98bb8 100%); }
+      iframe { position: absolute; right: 36px; bottom: 12px; width: 220px; height: 300px; border: 0; background: transparent; }
+    </style>
+  </head>
+  <body>
+    <iframe id="pet" allowtransparency="true"></iframe>
+    <script>
+      document.getElementById("pet").src = "/index.html" + location.search;
+    </script>
+  </body>
+</html>

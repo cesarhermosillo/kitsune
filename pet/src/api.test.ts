@@ -101,20 +101,60 @@ describe("apiCall", () => {
       message: "Kitsune no responde",
     });
   });
+
+  test("si token() rechaza devuelve unreachable", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch;
+
+    const depsWithFailingToken = {
+      baseUrl: "http://k",
+      token: async () => {
+        throw new Error("Token service down");
+      },
+      fetch: fetchImpl,
+    };
+
+    const res = await apiCall(depsWithFailingToken, "GET", "/options/p1");
+
+    expect(res).toEqual({
+      ok: false,
+      status: 0,
+      code: "unreachable",
+      message: "Kitsune no responde",
+    });
+  });
+
+  test("en 200 con cuerpo JSON inválido devuelve bad_response", async () => {
+    const fetchImpl = (async () =>
+      new Response("not valid json", { status: 200 })) as unknown as typeof fetch;
+
+    const res = await apiCall(deps(fetchImpl), "GET", "/options/p1");
+
+    expect(res).toEqual({
+      ok: false,
+      status: 200,
+      code: "bad_response",
+      message: "Respuesta inválida de Kitsune",
+    });
+  });
 });
 
 describe("helpers de acciones", () => {
-  test("getOptions llama GET /options/:id y tipa la respuesta", async () => {
-    const fetchImpl = (async (url: string) =>
-      new Response(
+  test("getOptions llama GET /proposals/:id/options y tipa la respuesta", async () => {
+    const seen: { url: string } = { url: "" };
+    const fetchImpl = (async (url: string) => {
+      seen.url = url;
+      return new Response(
         JSON.stringify({
           title: "Elige workflow",
           choices: [{ id: "w1", name: "Fix", suggested: true, favorite: false, dangerous: false, group: "main" }],
         }),
         { status: 200 }
-      )) as unknown as typeof fetch;
+      );
+    }) as unknown as typeof fetch;
 
     const res = await getOptions(deps(fetchImpl), "p1");
+    expect(seen.url).toBe("http://k/proposals/p1/options");
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.data.title).toBe("Elige workflow");
@@ -122,7 +162,7 @@ describe("helpers de acciones", () => {
     }
   });
 
-  test("launchProposal llama POST /launch/:id con workflowId", async () => {
+  test("launchProposal llama POST /proposals/:id/launch con workflowId", async () => {
     const seen: { url: string; body?: string } = { url: "" };
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       seen.url = url;
@@ -132,12 +172,12 @@ describe("helpers de acciones", () => {
 
     const res = await launchProposal(deps(fetchImpl), "p1", "w1");
 
-    expect(seen.url).toBe("http://k/launch/p1");
+    expect(seen.url).toBe("http://k/proposals/p1/launch");
     expect(seen.body).toBe(JSON.stringify({ workflowId: "w1" }));
     expect(res).toEqual({ ok: true, data: { status: "launched", sessionName: "s1" } });
   });
 
-  test("rejectProposal llama POST /reject/:id sin body", async () => {
+  test("rejectProposal llama POST /proposals/:id/reject sin body", async () => {
     const seen: { url: string; body?: string } = { url: "" };
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       seen.url = url;
@@ -147,12 +187,12 @@ describe("helpers de acciones", () => {
 
     const res = await rejectProposal(deps(fetchImpl), "p1");
 
-    expect(seen.url).toBe("http://k/reject/p1");
+    expect(seen.url).toBe("http://k/proposals/p1/reject");
     expect(seen.body).toBeUndefined();
     expect(res).toEqual({ ok: true, data: { status: "rejected" } });
   });
 
-  test("retryProposal llama POST /retry/:id sin body", async () => {
+  test("retryProposal llama POST /proposals/:id/retry sin body", async () => {
     const seen: { url: string; body?: string } = { url: "" };
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       seen.url = url;
@@ -162,8 +202,19 @@ describe("helpers de acciones", () => {
 
     const res = await retryProposal(deps(fetchImpl), "p1");
 
-    expect(seen.url).toBe("http://k/retry/p1");
+    expect(seen.url).toBe("http://k/proposals/p1/retry");
     expect(seen.body).toBeUndefined();
     expect(res).toEqual({ ok: true, data: { status: "launched", sessionName: "s2" } });
+  });
+
+  test("getOptions URL-encodes proposal IDs with special characters", async () => {
+    const seen: { url: string } = { url: "" };
+    const fetchImpl = (async (url: string) => {
+      seen.url = url;
+      return new Response(JSON.stringify({ title: "t", choices: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await getOptions(deps(fetchImpl), "p/1?x=y");
+    expect(seen.url).toBe("http://k/proposals/p%2F1%3Fx%3Dy/options");
   });
 });

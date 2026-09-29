@@ -27,7 +27,14 @@ export async function apiCall<T>(
   path: string,
   body?: unknown
 ): Promise<ApiResult<T>> {
-  const headers: Record<string, string> = { "x-kitsune-token": await deps.token() };
+  let token: string;
+  try {
+    token = await deps.token();
+  } catch {
+    return { ok: false, status: 0, code: "unreachable", message: "Kitsune no responde" };
+  }
+
+  const headers: Record<string, string> = { "x-kitsune-token": token };
   if (body !== undefined) headers["content-type"] = "application/json";
 
   let res: Response;
@@ -59,18 +66,35 @@ export async function apiCall<T>(
     };
   }
 
-  const data = (await res.json()) as T;
-  return { ok: true, data };
+  try {
+    const data = (await res.json()) as T;
+    return { ok: true, data };
+  } catch {
+    return { ok: false, status: res.status, code: "bad_response", message: "Respuesta inválida de Kitsune" };
+  }
 }
 
 export const getOptions = (deps: ApiDeps, id: string) =>
-  apiCall<{ title: string; choices: WorkflowChoice[] }>(deps, "GET", `/options/${id}`);
+  apiCall<{ title: string; choices: WorkflowChoice[] }>(
+    deps,
+    "GET",
+    `/proposals/${encodeURIComponent(id)}/options`
+  );
 
 export const launchProposal = (deps: ApiDeps, id: string, workflowId: string) =>
-  apiCall<{ status: "launched"; sessionName: string }>(deps, "POST", `/launch/${id}`, { workflowId });
+  apiCall<{ status: "launched"; sessionName: string }>(
+    deps,
+    "POST",
+    `/proposals/${encodeURIComponent(id)}/launch`,
+    { workflowId }
+  );
 
 export const rejectProposal = (deps: ApiDeps, id: string) =>
-  apiCall<{ status: "rejected" }>(deps, "POST", `/reject/${id}`);
+  apiCall<{ status: "rejected" }>(deps, "POST", `/proposals/${encodeURIComponent(id)}/reject`);
 
 export const retryProposal = (deps: ApiDeps, id: string) =>
-  apiCall<{ status: "launched"; sessionName: string }>(deps, "POST", `/retry/${id}`);
+  apiCall<{ status: "launched"; sessionName: string }>(
+    deps,
+    "POST",
+    `/proposals/${encodeURIComponent(id)}/retry`
+  );

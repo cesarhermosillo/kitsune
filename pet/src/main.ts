@@ -2,8 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import meta from "../public/sprites.json";
+import type { ApiDeps } from "./api";
+import { getOptions, launchProposal, rejectProposal, retryProposal } from "./api";
 import { startClient } from "./client";
 import { expandedRows } from "./expanded";
+import { choiceLabel, confirmText, flowReducer, LIST, resultText, visibleChoices, type Flow } from "./flow";
 import { isOpaqueAt } from "./hit";
 import { applyEvent, applySnapshot, currentAnimation, initialModel, setConnected, summary, type Model } from "./model";
 import { frameIndex } from "./player";
@@ -16,12 +19,39 @@ const canvas = document.getElementById("pet") as HTMLCanvasElement;
 const bubbleEl = document.getElementById("bubble") as HTMLDivElement;
 const tailEl = document.getElementById("bubble-tail") as HTMLDivElement;
 const ctx = canvas.getContext("2d")!;
+const apiDeps: ApiDeps = {
+  baseUrl: API,
+  token: () => invoke<string>("read_pet_token"),
+  fetch: window.fetch.bind(window),
+};
 let scale = Number(localStorage.getItem("kitsune-scale") ?? 4);
 let model: Model = initialModel(Date.now());
 let hovering = false;
 let expanded = false;
 let animName = "";
 let animStart = 0;
+
+// Task 6: estado local del flujo de acciones (lanzar/ignorar/reintentar con confirmación).
+// Cambiar `flow` marca la burbuja como sucia; nunca reconstruye el DOM fuera de draw().
+let flow: Flow = LIST;
+let bubbleDirty = true;
+let resultTimer: ReturnType<typeof setTimeout> | undefined;
+
+function setFlow(next: Flow) {
+  flow = next;
+  bubbleDirty = true;
+  clearTimeout(resultTimer);
+  if (next.view === "result") {
+    resultTimer = setTimeout(() => setFlow(LIST), 4000);
+  }
+}
+
+function closeBubble() {
+  clearTimeout(resultTimer);
+  flow = LIST;
+  bubbleDirty = true;
+  expanded = false;
+}
 
 // m1: "No molestar" persiste entre arranques; el estado de verdad del menú vive en Rust.
 const savedDnd = localStorage.getItem("kitsune-dnd") === "1";
@@ -79,10 +109,14 @@ function draw() {
     ctx.filter = offline ? "grayscale(1)" : "none";
     ctx.drawImage(sheet, frame.x, frame.y, meta.frameSize, meta.frameSize, 0, 0, canvas.width, canvas.height);
   }
-  // I1: el DOM de la burbuja solo se toca cuando cambia algo, para no desprender el <a> entre mousedown y mouseup.
+  // I1: el DOM de la burbuja solo se toca cuando cambia algo, para no desprender el <a> ni los
+  // <button> entre mousedown y mouseup. Task 6: además de dirty por cambios de `flow`, la vista
+  // "list" también se repinta cuando cambia model.state (nuevas propuestas/sesiones).
   if (expanded && model.connected) {
-    if (renderedExpandedState !== model.state) {
+    const stateChanged = flow.view === "list" && renderedExpandedState !== model.state;
+    if (bubbleDirty || stateChanged) {
       renderedExpandedState = model.state;
+      bubbleDirty = false;
       lastBubbleText = null;
       renderExpandedBubble();
     }
@@ -99,11 +133,42 @@ function draw() {
   requestAnimationFrame(draw);
 }
 
-// Spec §4: "Clic: burbuja expandida con la lista de pendientes y los enlaces
-// a ClickUp y Ronin." Built as DOM nodes (never innerHTML with remote
-// strings) so the ClickUp titles/urls from the daemon can't inject markup.
+// Botón genérico de la burbuja (Task 6). Siempre textContent, nunca innerHTML.
+function makeButton(label: string, dataset: Record<string, string>, danger = false): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  for (const [k, v] of Object.entries(dataset)) btn.dataset[k] = v;
+  if (danger) btn.classList.add("danger");
+  btn.textContent = label;
+  return btn;
+}
+
+// Spec §4 + Task 6: "Clic: burbuja expandida con la lista de pendientes, los enlaces
+// a ClickUp y Ronin, y los botones para lanzar/ignorar/reintentar." Built as DOM nodes
+// (never innerHTML with remote strings) so the ClickUp titles/urls from the daemon
+// can't inject markup.
 function renderExpandedBubble() {
   bubbleEl.textContent = "";
+  switch (flow.view) {
+    case "list":
+      renderListView();
+      break;
+    case "choose":
+      renderChooseView(flow);
+      break;
+    case "confirm":
+      renderConfirmView(flow);
+      break;
+    case "busy":
+      renderBusyView(flow);
+      break;
+    case "result":
+      renderResultView(flow);
+      break;
+  }
+}
+
+function renderListView() {
   const summaryLine = document.createElement("div");
   summaryLine.textContent = summary(model.state);
   bubbleEl.appendChild(summaryLine);
@@ -117,17 +182,145 @@ function renderExpandedBubble() {
     link.textContent = row.kind === "clickup" ? "Abrir en ClickUp" : "Ver en Ronin";
     line.appendChild(link);
     bubbleEl.appendChild(line);
+
+    if (row.kind === "clickup" && row.proposalId) {
+      const actions = document.createElement("div");
+      actions.className = "row";
+      if (row.status === "failed") {
+        actions.appendChild(makeButton("🔁 Reintentar", { act: "retry", id: row.proposalId }));
+      } else {
+        actions.appendChild(makeButton("🚀 Lanzar…", { act: "launch-open", id: row.proposalId }));
+      }
+      actions.appendChild(makeButton("❌ Ignorar", { act: "reject-ask", id: row.proposalId }));
+      bubbleEl.appendChild(actions);
+    }
   }
 }
 
-// I1: un solo listener delegado para los enlaces de la burbuja expandida.
+function renderChooseView(f: Extract<Flow, { view: "choose" }>) {
+  const title = document.createElement("div");
+  title.textContent = f.title;
+  bubbleEl.appendChild(title);
+  const visible = visibleChoices(f);
+  const row = document.createElement("div");
+  row.className = "row";
+  for (const choice of visible) {
+    row.appendChild(makeButton(choiceLabel(choice), { act: "pick", wf: choice.id }));
+  }
+  if (visible.length < f.choices.length) {
+    row.appendChild(makeButton("Otro…", { act: "other" }));
+  }
+  row.appendChild(makeButton("Cancelar", { act: "cancel" }));
+  bubbleEl.appendChild(row);
+}
+
+function renderConfirmView(f: Extract<Flow, { view: "confirm" }>) {
+  const { question, yes, danger } = confirmText(f);
+  const q = document.createElement("div");
+  q.textContent = question;
+  bubbleEl.appendChild(q);
+  const row = document.createElement("div");
+  row.className = "row";
+  row.appendChild(makeButton(yes, { act: "confirm" }, danger));
+  row.appendChild(makeButton("Cancelar", { act: "cancel" }));
+  bubbleEl.appendChild(row);
+}
+
+function renderBusyView(f: Extract<Flow, { view: "busy" }>) {
+  const p = document.createElement("div");
+  p.textContent = f.label;
+  bubbleEl.appendChild(p);
+}
+
+function renderResultView(f: Extract<Flow, { view: "result" }>) {
+  const p = document.createElement("div");
+  p.textContent = f.text;
+  bubbleEl.appendChild(p);
+}
+
+// Task 6: dispara la llamada a la API correspondiente a un botón de la burbuja y
+// avanza `flow` con flowReducer en cada paso (busy → resultado).
+async function handleFlowAction(act: string, ds: DOMStringMap) {
+  switch (act) {
+    case "launch-open": {
+      const id = ds.id;
+      if (!id) return;
+      setFlow(flowReducer(flow, { type: "busy", label: "Cargando workflows…" }));
+      const r = await getOptions(apiDeps, id);
+      if (r.ok) {
+        setFlow(
+          flowReducer(flow, {
+            type: "open_choose",
+            proposalId: id,
+            title: r.data.title,
+            choices: r.data.choices,
+          })
+        );
+      } else {
+        const rt = resultText(r);
+        setFlow(flowReducer(flow, { type: "done", ok: rt.ok, text: rt.text }));
+      }
+      break;
+    }
+    case "reject-ask": {
+      const id = ds.id;
+      if (!id) return;
+      const title = model.state.pending.find((p) => p.id === id)?.title ?? "";
+      setFlow(flowReducer(flow, { type: "ask_reject", proposalId: id, title }));
+      break;
+    }
+    case "retry": {
+      const id = ds.id;
+      if (!id) return;
+      setFlow(flowReducer(flow, { type: "busy", label: "Lanzando…" }));
+      const r = await retryProposal(apiDeps, id);
+      const rt = resultText(r);
+      setFlow(flowReducer(flow, { type: "done", ok: rt.ok, text: rt.text }));
+      break;
+    }
+    case "other":
+      setFlow(flowReducer(flow, { type: "show_other" }));
+      break;
+    case "pick":
+      setFlow(flowReducer(flow, { type: "pick", workflowId: ds.wf ?? "" }));
+      break;
+    case "cancel":
+      setFlow(flowReducer(flow, { type: "cancel" }));
+      break;
+    case "confirm": {
+      if (flow.view !== "confirm") return;
+      const current = flow;
+      if (current.kind === "launch") {
+        setFlow(flowReducer(flow, { type: "busy", label: "Lanzando…" }));
+        const r = await launchProposal(apiDeps, current.proposalId, current.workflow.id);
+        const rt = resultText(r);
+        setFlow(flowReducer(flow, { type: "done", ok: rt.ok, text: rt.text }));
+      } else {
+        setFlow(flowReducer(flow, { type: "busy", label: "Ignorando…" }));
+        const r = await rejectProposal(apiDeps, current.proposalId);
+        const rt = resultText(r);
+        setFlow(flowReducer(flow, { type: "done", ok: rt.ok, text: rt.text }));
+      }
+      break;
+    }
+  }
+}
+
+// I1: un solo listener delegado para los enlaces y botones de la burbuja expandida.
 bubbleEl.addEventListener("click", (e) => {
-  const link = (e.target as Element | null)?.closest?.("a[data-kind]") as HTMLAnchorElement | null;
-  if (!link) return;
+  const target = e.target as Element | null;
+  const link = target?.closest?.("a[data-kind]") as HTMLAnchorElement | null;
+  if (link) {
+    e.preventDefault();
+    const action = linkAction({ kind: link.dataset.kind, url: link.dataset.url });
+    if (action?.cmd === "open_url") void invoke("open_url", action.args);
+    else if (action?.cmd === "open_ronin") void invoke("open_ronin");
+    return;
+  }
+  const btn = target?.closest?.("[data-act]") as HTMLElement | null;
+  if (!btn) return;
   e.preventDefault();
-  const action = linkAction({ kind: link.dataset.kind, url: link.dataset.url });
-  if (action?.cmd === "open_url") void invoke("open_url", action.args);
-  else if (action?.cmd === "open_ronin") void invoke("open_ronin");
+  void handleFlowAction(btn.dataset.act ?? "", btn.dataset);
 });
 
 // Los clics atraviesan la ventana salvo sobre píxeles opacos del zorro o sobre la burbuja visible.
@@ -170,7 +363,11 @@ canvas.addEventListener("mousedown", (e) => {
   };
   const onUp = () => {
     cleanupGesture?.();
-    if (gesture.up() === "toggle") expanded = !expanded;
+    if (gesture.up() === "toggle") {
+      // Task 6: al cerrar la burbuja, el flujo vuelve siempre a la lista.
+      if (expanded) closeBubble();
+      else { expanded = true; bubbleDirty = true; }
+    }
   };
   window.addEventListener("mousemove", onMove);
   window.addEventListener("mouseup", onUp);

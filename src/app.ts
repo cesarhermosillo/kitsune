@@ -1,14 +1,16 @@
 import { capRequest, TriageError, type Brain } from "./brain.js";
-import { parseUpdate, type Channel, type ChannelEvent } from "./channels/telegram.js";
+import { parseUpdate, type Channel, type ChannelEvent, type WorkflowOption } from "./channels/telegram.js";
 import type { TgUpdate } from "./channels/telegram-api.js";
 import type { Policy } from "./policy.js";
 import { InvalidTransition } from "./proposals.js";
 import { RoninError, type RoninClient } from "./ronin-client.js";
 import type { Store } from "./store.js";
-import type { Catalog, InboxEvent, Proposal, Triage } from "./types.js";
+import type { Catalog, CatalogWorkflow, InboxEvent, Proposal, Triage } from "./types.js";
 
 export interface AppDeps {
   store: Store; brain: Brain; ronin: RoninClient; channel: Channel; policy: Policy; now: () => number; ttlMs: number;
+  /** Nombres de workflows favoritos, en el orden en que deben mostrarse al elegir workflow (config.favoriteWorkflows). */
+  favoriteWorkflows: string[];
   log?: (line: string) => void;
 }
 export interface KitsuneApp {
@@ -23,6 +25,31 @@ export interface KitsuneApp {
 
 const clip = (text: string, max = 500) => (text.length > max ? `${text.slice(0, max)}…` : text);
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const hasMergeDeploy = (w: CatalogWorkflow): boolean => w.stages.includes("merge") || w.stages.includes("deploy");
+const workflowLabel = (w: CatalogWorkflow, suggested: boolean): string =>
+  `${suggested ? "⭐ " : ""}${w.name}${hasMergeDeploy(w) ? " ⚠️ merge/deploy" : ""}`;
+
+/** Selector inicial de ✅ Lanzar: el sugerido (primero si no es favorito) + los favoritos presentes en el catálogo, en su orden. */
+function favoriteWorkflowOptions(p: Proposal, catalog: Catalog, favorites: string[]): WorkflowOption[] {
+  const indexByName = new Map(catalog.workflows.map((w, i) => [w.name, i] as const));
+  const favoriteNames = favorites.filter((name) => indexByName.has(name));
+  const options: WorkflowOption[] = [];
+  const suggestedIndex = indexByName.get(p.workflowName);
+  if (suggestedIndex !== undefined && !favoriteNames.includes(p.workflowName)) {
+    options.push({ index: suggestedIndex, label: workflowLabel(catalog.workflows[suggestedIndex], true) });
+  }
+  for (const name of favoriteNames) {
+    const index = indexByName.get(name)!;
+    options.push({ index, label: workflowLabel(catalog.workflows[index], name === p.workflowName) });
+  }
+  return options;
+}
+
+/** Pantalla "Otro…": todo el catálogo, mismo formato de etiquetas. */
+function allWorkflowOptions(p: Proposal, catalog: Catalog): WorkflowOption[] {
+  return catalog.workflows.map((w, index) => ({ index, label: workflowLabel(w, w.name === p.workflowName) }));
+}
 
 const MAX_SESSION_NAME = 60;
 const SLUG_WORDS = 6;
@@ -78,6 +105,9 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
   async function notice(text: string): Promise<void> {
     try { await channel.sendNotice(text); } catch (error) { log(`[telegram] no se pudo avisar: ${errorText(error)}`); }
   }
+  async function editSelector(messageId: number, text: string): Promise<void> {
+    try { await channel.editRaw(messageId, text); } catch (error) { log(`[telegram] no se pudo editar el selector: ${errorText(error)}`); }
+  }
 
   async function launch(p: Proposal): Promise<void> {
     const name = sessionNameFor(p);
@@ -121,12 +151,42 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
     store.audit("user", event.action, p.id, { index: event.index ?? null }, deps.now());
     try {
       switch (event.action) {
-        case "approve":
-        case "retry": {
-          const from = event.action === "approve" ? "pending" : "failed";
-          expect(p, from);
+        case "approve": {
+          expect(p, "pending");
+          const catalog = await deps.ronin.catalog();
+          await ack(event.callbackId, "Elige el workflow");
+          const title = p.title || p.origin;
+          await channel.sendWorkflowChoice(p, `¿Con qué workflow lanzo «${title}»?`, favoriteWorkflowOptions(p, catalog, deps.favoriteWorkflows), { other: true, cancel: true });
+          return;
+        }
+        case "other_workflows": {
+          expect(p, "pending");
+          const catalog = await deps.ronin.catalog();
+          await ack(event.callbackId);
+          const title = p.title || p.origin;
+          await channel.sendWorkflowChoice(p, `¿Con qué workflow lanzo «${title}»?`, allWorkflowOptions(p, catalog), {});
+          return;
+        }
+        case "cancel_launch": {
+          expect(p, "pending");
+          await ack(event.callbackId, "Cancelado");
+          return;
+        }
+        case "launch_with": {
+          expect(p, "pending");
+          const catalog = await deps.ronin.catalog();
+          const wf = catalog.workflows[event.index ?? -1];
+          if (!wf) { await ack(event.callbackId, "Opción inválida"); return; }
           await ack(event.callbackId, "Lanzando…");
-          await launch(store.transition(p.id, "approved", deps.now(), undefined, from));
+          const approved = store.approveWith(p.id, { workflowId: wf.id, workflowName: wf.name }, deps.now());
+          await launch(approved);
+          if (store.getProposal(p.id)?.status === "launched") await editSelector(event.messageId, `🚀 Lanzada con ${wf.name}`);
+          return;
+        }
+        case "retry": {
+          expect(p, "failed");
+          await ack(event.callbackId, "Lanzando…");
+          await launch(store.transition(p.id, "approved", deps.now(), undefined, "failed"));
           return;
         }
         case "reject": {

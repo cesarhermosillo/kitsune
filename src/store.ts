@@ -16,6 +16,8 @@ export interface Store {
   getProposal(id: string): Proposal | null;
   transition(id: string, to: ProposalStatus, now: number, patch?: { sessionName?: string; error?: string | null }, from?: ProposalStatus): Proposal;
   updatePending(id: string, patch: Partial<Pick<Proposal, "repo" | "workflowId" | "workflowName" | "request">>, now: number): Proposal;
+  /** Exige `pending`: fija workflowId/workflowName y transiciona a `approved` en una sola transacción atómica. */
+  approveWith(id: string, patch: { workflowId: string; workflowName: string }, now: number): Proposal;
   setMessageId(id: string, messageId: number): void;
   listPending(): Proposal[];
   /** Propuestas pendientes que nunca llegaron a Telegram (telegram_message_id NULL). */
@@ -131,6 +133,14 @@ export function openStore(path: string): Store {
       const next = { ...current, ...patch };
       db.prepare("UPDATE proposals SET repo = ?, workflow_id = ?, workflow_name = ?, request = ?, updated_at = ? WHERE id = ?")
         .run(next.repo, next.workflowId, next.workflowName, next.request, now, id);
+      return getProposal(id)!;
+    }),
+    approveWith: (id, patch, now) => inTx(() => {
+      const current = getProposal(id);
+      if (!current) throw new Error(`propuesta desconocida: ${id}`);
+      if (current.status !== "pending" || !canTransition(current.status, "approved")) throw new InvalidTransition(current.status, "approved");
+      db.prepare("UPDATE proposals SET workflow_id = ?, workflow_name = ?, status = 'approved', updated_at = ? WHERE id = ?")
+        .run(patch.workflowId, patch.workflowName, now, id);
       return getProposal(id)!;
     }),
     setMessageId: (id, messageId) => { db.prepare("UPDATE proposals SET telegram_message_id = ? WHERE id = ?").run(messageId, id); },

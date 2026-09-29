@@ -1,16 +1,24 @@
 import type { InboxEvent, Proposal } from "../types.js";
 import type { TelegramApi, TgUpdate } from "./telegram-api.js";
 
-export type CallbackAction = "approve" | "reject" | "edit" | "retry" | "edit_request" | "edit_repo" | "edit_workflow" | "set_repo" | "set_workflow";
+export type CallbackAction =
+  | "approve" | "reject" | "edit" | "retry" | "edit_request" | "edit_repo" | "edit_workflow" | "set_repo" | "set_workflow"
+  | "launch_with" | "other_workflows" | "cancel_launch";
 export type ChannelEvent =
-  | { type: "callback"; callbackId: string; chatId: number; action: CallbackAction; proposalId: string; index?: number }
+  | { type: "callback"; callbackId: string; chatId: number; messageId: number; action: CallbackAction; proposalId: string; index?: number }
   | { type: "message"; chatId: number; messageId: number; text: string; replyToMessageId?: number };
+/** Una entrada del selector de workflow: la etiqueta a mostrar y su índice en `catalog.workflows`. */
+export interface WorkflowOption { label: string; index: number }
 export interface Channel {
   sendProposal(p: Proposal, event: InboxEvent | null): Promise<number>;
   updateProposal(p: Proposal, note: string): Promise<void>;
   sendEditMenu(p: Proposal): Promise<number>;
   askForRequest(p: Proposal): Promise<number>;
   sendChoices(p: Proposal, field: "repo" | "workflow", options: string[]): Promise<number>;
+  /** Selector de workflow al lanzar: un botón `launch_with` por opción, más "Otro…"/"Cancelar" si se piden. */
+  sendWorkflowChoice(p: Proposal, title: string, options: WorkflowOption[], extra: { other?: boolean; cancel?: boolean }): Promise<number>;
+  /** Edita cualquier mensaje propio por su id, sin botones (usado para el selector tras lanzar). Best-effort en app.ts. */
+  editRaw(messageId: number, text: string): Promise<void>;
   sendNotice(text: string): Promise<number>;
   sendQuestion(session: string, question: string, options?: string[]): Promise<number>;
   ackCallback(callbackId: string, text?: string): Promise<void>;
@@ -18,6 +26,7 @@ export interface Channel {
 
 const CODES: Record<CallbackAction, string> = {
   approve: "a", reject: "r", edit: "e", retry: "t", edit_request: "er", edit_repo: "eo", edit_workflow: "ew", set_repo: "sr", set_workflow: "sw",
+  launch_with: "lw", other_workflows: "ow", cancel_launch: "cx",
 };
 const ACTIONS = Object.fromEntries(Object.entries(CODES).map(([action, code]) => [code, action])) as Record<string, CallbackAction>;
 
@@ -31,7 +40,7 @@ export function parseUpdate(update: TgUpdate): ChannelEvent | null {
     const [code, proposalId, rawIndex] = (cb.data ?? "").split(":");
     const action = ACTIONS[code];
     if (!action || !proposalId || !cb.message) return null;
-    const event: ChannelEvent = { type: "callback", callbackId: cb.id, chatId: cb.message.chat.id, action, proposalId };
+    const event: ChannelEvent = { type: "callback", callbackId: cb.id, chatId: cb.message.chat.id, messageId: cb.message.message_id, action, proposalId };
     if (rawIndex !== undefined && /^\d+$/.test(rawIndex)) event.index = Number(rawIndex);
     return event;
   }
@@ -90,6 +99,13 @@ export function createTelegramChannel(opts: { api: TelegramApi; chatId: number }
     sendChoices: (p, field, options) => send(field === "repo" ? "Elige el repo:" : "Elige el workflow:", keyboard(
       options.map((option, index) => [{ text: option, callback_data: encodeCallback(field === "repo" ? "set_repo" : "set_workflow", p.id, index) }]),
     )),
+    sendWorkflowChoice: (p, title, options, extra) => {
+      const rows: Button[][] = options.map((o) => [{ text: o.label, callback_data: encodeCallback("launch_with", p.id, o.index) }]);
+      if (extra.other) rows.push([{ text: "Otro…", callback_data: encodeCallback("other_workflows", p.id) }]);
+      if (extra.cancel) rows.push([{ text: "Cancelar", callback_data: encodeCallback("cancel_launch", p.id) }]);
+      return send(title, keyboard(rows));
+    },
+    editRaw: async (messageId, text) => { await opts.api.editMessageText(opts.chatId, messageId, fitText(text), keyboard([])); },
     sendNotice: (text) => send(text),
     sendQuestion: (session, question, options) => {
       const base = `❓ La sesión ${session} pregunta:\n\n${question}`;

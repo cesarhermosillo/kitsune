@@ -11,6 +11,7 @@ export interface KitsuneConfig {
   telegram: { chatId: number };
   ronin: { url: string };
   proposals: { ttlHours: number };
+  favoriteWorkflows: string[];
 }
 export interface Secrets { clickupToken: string; telegramBotToken: string; roninCapabilityToken: string }
 export class ConfigError extends Error {}
@@ -58,6 +59,10 @@ export function loadConfig(dir: string): { config: KitsuneConfig; secrets: Secre
   if (typeof chatId !== "number" || !Number.isInteger(chatId)) throw new ConfigError("telegram.chatId debe ser un número entero");
   const url = raw.ronin?.url ?? "http://localhost:8787";
   if (typeof url !== "string" || !/^https?:\/\//.test(url)) throw new ConfigError("ronin.url debe ser una URL http(s)");
+  const favoriteWorkflows = raw.favoriteWorkflows ?? [];
+  if (!Array.isArray(favoriteWorkflows) || !favoriteWorkflows.every((w) => typeof w === "string" && w.trim())) {
+    throw new ConfigError("favoriteWorkflows debe ser una lista de strings no vacíos");
+  }
 
   const config: KitsuneConfig = {
     engine,
@@ -67,6 +72,7 @@ export function loadConfig(dir: string): { config: KitsuneConfig; secrets: Secre
     telegram: { chatId },
     ronin: { url: url.replace(/\/+$/, "") },
     proposals: { ttlHours: positive(raw.proposals?.ttlHours, 24, "proposals.ttlHours") },
+    favoriteWorkflows,
   };
 
   const envPath = join(dir, ".env");

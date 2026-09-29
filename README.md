@@ -25,6 +25,14 @@ Nothing that creates or changes anything runs without your explicit approval.
   If a proposal can't be delivered, it is re-sent every minute while it is pending. Plain notices
   (mentions, errors, finished sessions) are best-effort and are not re-sent. Button taps are
   handled at most once: if handling one fails it is logged and audited, never retried.
+  Tapping ✅ doesn't launch right away: it asks which workflow to launch with. You get a row per
+  favorite from `favoriteWorkflows` (in that order, skipping any no longer in Ronin's catalog),
+  with the classifier's suggested workflow starred (⭐) — placed first if it isn't already one of
+  your favorites — and a ⚠️ merge/deploy tag on any workflow whose stages include a merge or
+  deploy step. `Otro…` opens the full catalog with the same labels; `Cancelar` leaves the proposal
+  pending so you can tap ✅ again later. If a session appears stuck in a shell (not `working` or
+  `idle`, its flow unfinished) for two checks in a row, Kitsune sends a 💤 notice and stops
+  watching it.
 - **Ronin (MCP)**: `listar_repos_y_workflows`, `crear_sesion`, `estado_sesiones`, `responder_sesion`.
 - **Local state**: SQLite at `~/.kitsune/kitsune.db`, including a full audit log.
 
@@ -34,7 +42,9 @@ Nothing that creates or changes anything runs without your explicit approval.
    `estado_sesiones`, `responder_sesion` — branch `feat/mcp-sesiones` or later), and at least one
    of `claude`, `codex`, `agy`.
 2. `npm install` (builds via `prepare`; or run `npm run build`).
-3. `mkdir -m 700 -p ~/.kitsune && cp config.example.json ~/.kitsune/config.json` and edit it.
+3. `mkdir -m 700 -p ~/.kitsune && cp config.example.json ~/.kitsune/config.json` and edit it,
+   including `favoriteWorkflows` (workflow names from Ronin's catalog, shown first and in that
+   order in the workflow selector — defaults to `[]`).
 4. Create `~/.kitsune/.env` with `CLICKUP_TOKEN`, `TELEGRAM_BOT_TOKEN`,
    `RONIN_CAPABILITY_TOKEN`, then `chmod 600 ~/.kitsune/.env`.
    `RONIN_CAPABILITY_TOKEN` is the content of the `capability-token` file in Ronin's data

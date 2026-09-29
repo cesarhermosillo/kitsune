@@ -30,7 +30,16 @@ test("encodeCallback y parseUpdate hacen ida y vuelta", () => {
   assert.equal(encodeCallback("approve", "abc123defg"), "a:abc123defg");
   assert.equal(encodeCallback("set_repo", "abc123defg", 2), "sr:abc123defg:2");
   assert.deepEqual(parseUpdate({ update_id: 1, callback_query: { id: "cb1", data: "sr:abc123defg:2", message: { message_id: 5, chat: { id: 42 } } } }),
-    { type: "callback", callbackId: "cb1", chatId: 42, action: "set_repo", proposalId: "abc123defg", index: 2 });
+    { type: "callback", callbackId: "cb1", chatId: 42, messageId: 5, action: "set_repo", proposalId: "abc123defg", index: 2 });
+});
+
+test("A: los códigos de launch_with/other_workflows/cancel_launch codifican corto y se parsean", () => {
+  assert.equal(encodeCallback("launch_with", "abc123defg", 3), "lw:abc123defg:3");
+  assert.equal(encodeCallback("other_workflows", "abc123defg"), "ow:abc123defg");
+  assert.equal(encodeCallback("cancel_launch", "abc123defg"), "cx:abc123defg");
+  assert.ok(Buffer.byteLength(encodeCallback("launch_with", "abc123defg", 3), "utf8") <= 64);
+  assert.deepEqual(parseUpdate({ update_id: 9, callback_query: { id: "cb9", data: "lw:abc123defg:3", message: { message_id: 7, chat: { id: 42 } } } }),
+    { type: "callback", callbackId: "cb9", chatId: 42, messageId: 7, action: "launch_with", proposalId: "abc123defg", index: 3 });
 });
 
 test("parseUpdate reconoce mensajes y respuestas", () => {
@@ -106,6 +115,37 @@ test("sendChoices crea un botón por opción con su índice", async () => {
   await createTelegramChannel({ api, chatId: 42 }).sendChoices(P, "repo", ["todo-api", "web"]);
   const kb = (sent[0].args[2] as { reply_markup: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } }).reply_markup.inline_keyboard;
   assert.deepEqual(kb.flat().map((b) => [b.text, b.callback_data]), [["todo-api", "sr:abc123defg:0"], ["web", "sr:abc123defg:1"]]);
+});
+
+test("A: sendWorkflowChoice manda un botón launch_with por opción, más Otro…/Cancelar si se piden", async () => {
+  const { api, sent } = fakeApi();
+  const channel = createTelegramChannel({ api, chatId: 42 });
+  const id = await channel.sendWorkflowChoice(P, "¿Con qué workflow lanzo «Rechazar títulos vacíos»?",
+    [{ label: "⭐ claude-plan-codex-impl", index: 3 }, { label: "pr-review-merge-dev ⚠️ merge/deploy", index: 2 }],
+    { other: true, cancel: true });
+  assert.equal(id, 101);
+  const kb = (sent[0].args[2] as { reply_markup: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } }).reply_markup.inline_keyboard;
+  assert.deepEqual(kb, [
+    [{ text: "⭐ claude-plan-codex-impl", callback_data: "lw:abc123defg:3" }],
+    [{ text: "pr-review-merge-dev ⚠️ merge/deploy", callback_data: "lw:abc123defg:2" }],
+    [{ text: "Otro…", callback_data: "ow:abc123defg" }],
+    [{ text: "Cancelar", callback_data: "cx:abc123defg" }],
+  ]);
+  assert.equal(sent[0].args[1], "¿Con qué workflow lanzo «Rechazar títulos vacíos»?");
+});
+
+test("A: sendWorkflowChoice sin extra no agrega Otro…/Cancelar (pantalla de todo el catálogo)", async () => {
+  const { api, sent } = fakeApi();
+  await createTelegramChannel({ api, chatId: 42 }).sendWorkflowChoice(P, "t", [{ label: "hotfix", index: 1 }], {});
+  const kb = (sent[0].args[2] as { reply_markup: { inline_keyboard: unknown[] } }).reply_markup.inline_keyboard;
+  assert.equal(kb.length, 1);
+});
+
+test("A: editRaw edita el mensaje dado sin botones", async () => {
+  const { api, sent } = fakeApi();
+  await createTelegramChannel({ api, chatId: 42 }).editRaw(55, "🚀 Lanzada con hotfix");
+  assert.equal(sent[0].method, "editMessageText");
+  assert.deepEqual(sent[0].args, [42, 55, "🚀 Lanzada con hotfix", { reply_markup: { inline_keyboard: [] } }]);
 });
 
 test("telegram-api llama a la Bot API y propaga errores", async () => {

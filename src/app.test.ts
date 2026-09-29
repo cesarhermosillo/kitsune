@@ -8,7 +8,12 @@ import { RoninError, type RoninClient } from "./ronin-client.js";
 import { openStore } from "./store.js";
 import type { Catalog, InboxEvent, Triage } from "./types.js";
 
-const CATALOG: Catalog = { repos: ["todo-api", "web"], workflows: [{ id: "wf-1", name: "plan-tdd-evidencia", stages: [] }, { id: "wf-2", name: "hotfix", stages: [] }] };
+const CATALOG: Catalog = { repos: ["todo-api", "web"], workflows: [
+  { id: "wf-1", name: "plan-tdd-evidencia", stages: [] },
+  { id: "wf-2", name: "hotfix", stages: [] },
+  { id: "wf-3", name: "pr-review-merge-dev", stages: ["review", "merge"] },
+  { id: "wf-4", name: "claude-plan-codex-impl", stages: [] },
+] };
 const EVENT: InboxEvent = {
   source: "clickup", id: "task_assigned:t1", kind: "task_assigned", title: "Rechazar títulos vacíos", body: "detalle",
   url: "https://app.clickup.com/t/t1", author: "ana", at: "2026-09-28T10:00:00.000Z",
@@ -16,7 +21,7 @@ const EVENT: InboxEvent = {
 };
 const PROPOSE: Triage = { action: "propose_session", repo: "todo-api", workflow: "plan-tdd-evidencia", request: "Valida títulos", reason: "claro" };
 
-function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name: string }>; now?: number; channel?: Partial<Channel>; reply?: () => Promise<void> } = {}) {
+function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name: string }>; now?: number; channel?: Partial<Channel>; reply?: () => Promise<void>; favoriteWorkflows?: string[] } = {}) {
   const store = openStore(":memory:");
   const log: string[] = [];
   let clock = opts.now ?? 1_000;
@@ -27,6 +32,12 @@ function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name:
     sendEditMenu: async () => { log.push("editmenu"); return ++msg; },
     askForRequest: async () => { log.push("ask"); return ++msg; },
     sendChoices: async (_p, field, options) => { log.push(`choices:${field}:${options.join(",")}`); return ++msg; },
+    sendWorkflowChoice: async (_p, title, options, extra) => {
+      const labels = options.map((o) => `${o.index}:${o.label}`).join(",");
+      log.push(`wfchoice:${title}:${labels}:other=${extra.other ? 1 : 0}:cancel=${extra.cancel ? 1 : 0}`);
+      return ++msg;
+    },
+    editRaw: async (messageId, text) => { log.push(`editraw:${messageId}:${text}`); },
     sendNotice: async (text) => { log.push(`notice:${text}`); return ++msg; },
     sendQuestion: async () => ++msg,
     ackCallback: async (_id, text) => { log.push(`ack:${text ?? ""}`); },
@@ -40,11 +51,15 @@ function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name:
     replySession: opts.reply ?? (async () => {}),
   };
   const brain: Brain = { triage: async () => { if (opts.triage instanceof Error) throw opts.triage; return opts.triage ?? PROPOSE; } };
-  const app = createKitsuneApp({ store, brain, ronin, channel, policy: createPolicy({ chatId: 42 }), now: () => clock, ttlMs: 60_000 });
+  const app = createKitsuneApp({
+    store, brain, ronin, channel, policy: createPolicy({ chatId: 42 }), now: () => clock, ttlMs: 60_000,
+    favoriteWorkflows: opts.favoriteWorkflows ?? [],
+  });
   return { app, store, log, launches, advance: (ms: number) => { clock += ms; } };
 }
 
-const cb = (action: string, proposalId: string, extra: Record<string, unknown> = {}) => ({ type: "callback" as const, callbackId: "cb", chatId: 42, action: action as never, proposalId, ...extra });
+const cb = (action: string, proposalId: string, extra: Record<string, unknown> = {}) => ({ type: "callback" as const, callbackId: "cb", chatId: 42, messageId: 999, action: action as never, proposalId, ...extra });
+const launchWith = (proposalId: string, index: number) => cb("launch_with", proposalId, { index });
 
 test("evento nuevo con propuesta crea proposal pendiente y la envía", async () => {
   const h = harness();
@@ -81,25 +96,89 @@ test("si el motor falla, el evento llega como aviso y nunca se lanza nada", asyn
   assert.match(h.log[0], /^notice:⚠️ No pude clasificar/);
 });
 
-test("approve lanza la sesión, la sigue y actualiza el mensaje", async () => {
-  const h = harness();
+test("A: approve no lanza; envía el selector con favoritos en orden, ⭐ en el sugerido, ⚠️ en merge/deploy, Otro… y Cancelar", async () => {
+  const h = harness({ favoriteWorkflows: ["hotfix", "pr-review-merge-dev"] });
   await h.app.onInboxEvent(EVENT);
   const [p] = h.store.listPending();
   await h.app.onChannelEvent(cb("approve", p.id));
-  assert.deepEqual(h.launches, [{ repo: "todo-api", workflowId: "wf-1", request: "Valida títulos", origen: "clickup:t1", name: `cowork-valida-titulos-${p.id.slice(0, 6)}` }]);
-  assert.equal(h.store.getProposal(p.id)?.status, "launched");
-  assert.deepEqual(h.store.listActiveSessions().map((s) => s.name), ["cowork-valida"]);
-  assert.ok(h.log.includes("update:launched:✅ Sesión cowork-valida creada"));
+  assert.equal(h.launches.length, 0);
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+  assert.ok(h.log.includes("ack:Elige el workflow"));
+  const entry = h.log.find((l) => l.startsWith("wfchoice:"))!;
+  assert.equal(entry, "wfchoice:¿Con qué workflow lanzo «Rechazar títulos vacíos»?:0:⭐ plan-tdd-evidencia,1:hotfix,2:pr-review-merge-dev ⚠️ merge/deploy:other=1:cancel=1");
 });
 
-test("approve dos veces lanza una sola sesión", async () => {
-  const h = harness();
+test("A: el sugerido fuera de favoritos va primero; un favorito ausente del catálogo se omite", async () => {
+  const h = harness({ favoriteWorkflows: ["workflow-borrado", "hotfix"] });
   await h.app.onInboxEvent(EVENT);
   const [p] = h.store.listPending();
   await h.app.onChannelEvent(cb("approve", p.id));
-  await h.app.onChannelEvent(cb("approve", p.id));
+  const entry = h.log.find((l) => l.startsWith("wfchoice:"))!;
+  assert.equal(entry, "wfchoice:¿Con qué workflow lanzo «Rechazar títulos vacíos»?:0:⭐ plan-tdd-evidencia,1:hotfix:other=1:cancel=1");
+});
+
+test("A: elegir un workflow del selector (launch_with) lanza una sola vez y queda launched con ese workflow", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(launchWith(p.id, 1)); // hotfix
+  assert.deepEqual(h.launches, [{ repo: "todo-api", workflowId: "wf-2", request: "Valida títulos", origen: "clickup:t1", name: `cowork-valida-titulos-${p.id.slice(0, 6)}` }]);
+  const after = h.store.getProposal(p.id)!;
+  assert.deepEqual([after.status, after.workflowId, after.workflowName], ["launched", "wf-2", "hotfix"]);
+  assert.deepEqual(h.store.listActiveSessions().map((s) => s.name), ["cowork-valida"]);
+  assert.ok(h.log.includes("update:launched:✅ Sesión cowork-valida creada"));
+  assert.ok(h.log.includes("editraw:999:🚀 Lanzada con hotfix"));
+});
+
+test("A: dos launch_with distintos (doble toque) lanzan una sola sesión; el segundo ack 'Ya no está vigente'", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(launchWith(p.id, 1));
+  await h.app.onChannelEvent(launchWith(p.id, 2));
   assert.equal(h.launches.length, 1);
+  assert.equal(h.store.getProposal(p.id)?.workflowId, "wf-2");
   assert.ok(h.log.includes("ack:Ya no está vigente"));
+});
+
+test("A: launch_with con índice fuera de rango responde 'Opción inválida' y no lanza", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(launchWith(p.id, 99));
+  assert.ok(h.log.includes("ack:Opción inválida"));
+  assert.equal(h.launches.length, 0);
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+});
+
+test("A: other_workflows lista todo el catálogo con botones launch_with", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(cb("other_workflows", p.id));
+  const entry = h.log.find((l) => l.startsWith("wfchoice:"))!;
+  assert.equal(entry, "wfchoice:¿Con qué workflow lanzo «Rechazar títulos vacíos»?:0:⭐ plan-tdd-evidencia,1:hotfix,2:pr-review-merge-dev ⚠️ merge/deploy,3:claude-plan-codex-impl:other=0:cancel=0");
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+});
+
+test("A: cancel_launch ack 'Cancelado' y deja la propuesta pending sin lanzar", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(cb("cancel_launch", p.id));
+  assert.ok(h.log.includes("ack:Cancelado"));
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+  assert.equal(h.launches.length, 0);
+});
+
+test("A: launch_with de un chat ajeno no hace nada y queda auditado", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent({ ...launchWith(p.id, 0), chatId: 666 });
+  assert.equal(h.launches.length, 0);
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+  assert.equal(h.store.listAudit(1)[0].action, "unauthorized");
 });
 
 test("fallo de Ronin deja la propuesta failed y retry la relanza", async () => {
@@ -107,7 +186,7 @@ test("fallo de Ronin deja la propuesta failed y retry la relanza", async () => {
   const h = harness({ launch: async () => { if (fail) throw new RoninError("UNREACHABLE", "Ronin no responde"); return { name: "cowork-valida" }; } });
   await h.app.onInboxEvent(EVENT);
   const [p] = h.store.listPending();
-  await h.app.onChannelEvent(cb("approve", p.id));
+  await h.app.onChannelEvent(launchWith(p.id, 0));
   assert.equal(h.store.getProposal(p.id)?.status, "failed");
   assert.ok(h.log.some((l) => l.startsWith("update:failed:⚠️ No se pudo lanzar: Ronin no responde")));
   fail = false;
@@ -115,12 +194,12 @@ test("fallo de Ronin deja la propuesta failed y retry la relanza", async () => {
   assert.equal(h.store.getProposal(p.id)?.status, "launched");
 });
 
-test("approve tras fallo no relanza; solo retry puede", async () => {
+test("approve tras fallo no relanza ni reabre el selector; solo retry puede", async () => {
   let fail = true;
   const h = harness({ launch: async () => { if (fail) throw new RoninError("UNREACHABLE", "Ronin no responde"); return { name: "cowork-valida" }; } });
   await h.app.onInboxEvent(EVENT);
   const [p] = h.store.listPending();
-  await h.app.onChannelEvent(cb("approve", p.id));
+  await h.app.onChannelEvent(launchWith(p.id, 0));
   assert.equal(h.store.getProposal(p.id)?.status, "failed");
   assert.equal(h.launches.length, 1);
   await h.app.onChannelEvent(cb("approve", p.id));
@@ -200,7 +279,7 @@ test("respuesta a una pregunta de sesión se reenvía a Ronin", async () => {
   const h = harness();
   const replies: Array<[string, string]> = [];
   (h as any).app = createKitsuneApp({
-    store: h.store, brain: { triage: async () => PROPOSE }, now: () => 1, ttlMs: 1, policy: createPolicy({ chatId: 42 }),
+    store: h.store, brain: { triage: async () => PROPOSE }, now: () => 1, ttlMs: 1, policy: createPolicy({ chatId: 42 }), favoriteWorkflows: [],
     ronin: { catalog: async () => CATALOG, createSession: async () => ({ name: "x" }), sessionStatus: async () => [], replySession: async (n, t) => { replies.push([n, t]); } },
     channel: { sendNotice: async (t: string) => { h.log.push(`notice:${t}`); return 1; } } as unknown as Channel,
   });
@@ -217,10 +296,10 @@ test("C1: ✅ viejo (ack lanza 'query is too old') igual lanza una sola vez", as
   const h = harness({ channel: { ackCallback: async () => { throw new Error("Telegram answerCallbackQuery: Bad Request: query is too old"); } } });
   await h.app.onInboxEvent(EVENT);
   const [p] = h.store.listPending();
-  await h.app.onChannelEvent(cb("approve", p.id));
+  await h.app.onChannelEvent(launchWith(p.id, 0));
   assert.equal(h.launches.length, 1);
   assert.equal(h.store.getProposal(p.id)?.status, "launched");
-  await h.app.onChannelEvent(cb("approve", p.id));
+  await h.app.onChannelEvent(launchWith(p.id, 1));
   assert.equal(h.launches.length, 1);
 });
 
@@ -231,7 +310,7 @@ test("C1: 🔁 con Ronin caído y edición 'message is not modified' deja failed
   });
   await h.app.onInboxEvent(EVENT);
   const [p] = h.store.listPending();
-  await h.app.onChannelEvent(cb("approve", p.id));
+  await h.app.onChannelEvent(launchWith(p.id, 0));
   assert.equal(h.store.getProposal(p.id)?.status, "failed");
   await h.app.onChannelEvent(cb("retry", p.id));
   assert.equal(h.store.getProposal(p.id)?.status, "failed");
@@ -242,7 +321,7 @@ test("C1: una edición fallida tras lanzar no cambia el estado ni lanza", async 
   const h = harness({ channel: { updateProposal: async () => { throw new Error("Telegram editMessageText: boom"); } } });
   await h.app.onInboxEvent(EVENT);
   const [p] = h.store.listPending();
-  await h.app.onChannelEvent(cb("approve", p.id));
+  await h.app.onChannelEvent(launchWith(p.id, 0));
   assert.equal(h.store.getProposal(p.id)?.status, "launched");
   assert.deepEqual(h.store.listActiveSessions().map((s) => s.name), ["cowork-valida"]);
 });
@@ -252,16 +331,16 @@ test("C1: el ack se hace antes de cambiar el estado", async () => {
   const h = harness();
   const ref: { id?: string } = {};
   (h as any).app = createKitsuneApp({
-    store: h.store, brain: { triage: async () => PROPOSE }, now: () => 1, ttlMs: 60_000, policy: createPolicy({ chatId: 42 }),
+    store: h.store, brain: { triage: async () => PROPOSE }, now: () => 1, ttlMs: 60_000, policy: createPolicy({ chatId: 42 }), favoriteWorkflows: [],
     ronin: { catalog: async () => CATALOG, createSession: async () => ({ name: "cowork-x" }), sessionStatus: async () => [], replySession: async () => {} },
     channel: {
-      sendProposal: async () => 1, updateProposal: async () => {}, sendNotice: async () => 1,
+      sendProposal: async () => 1, updateProposal: async () => {}, sendNotice: async () => 1, editRaw: async () => {},
       ackCallback: async () => { statusAtAck = h.store.getProposal(ref.id!)?.status; },
     } as unknown as Channel,
   });
   await h.app.onInboxEvent(EVENT);
   ref.id = h.store.listPending()[0].id;
-  await h.app.onChannelEvent(cb("approve", ref.id));
+  await h.app.onChannelEvent({ type: "callback", callbackId: "cb", chatId: 42, messageId: 999, action: "launch_with", proposalId: ref.id, index: 0 } as never);
   assert.equal(statusAtAck, "pending");
 });
 
@@ -330,10 +409,10 @@ test("I2: dos tareas que empiezan igual reciben nombres distintos; el reintento 
   await h.app.onInboxEvent(EVENT);
   await h.app.onInboxEvent({ ...EVENT, id: "task_assigned:t2" });
   const [a, b] = h.store.listPending();
-  await h.app.onChannelEvent(cb("approve", a.id));
+  await h.app.onChannelEvent(launchWith(a.id, 0));
   fail = false;
   await h.app.onChannelEvent(cb("retry", a.id));
-  await h.app.onChannelEvent(cb("approve", b.id));
+  await h.app.onChannelEvent(launchWith(b.id, 0));
   const names = (h.launches as Array<{ name: string }>).map((l) => l.name);
   assert.equal(names[0], names[1]);
   assert.notEqual(names[0], names[2]);
@@ -348,7 +427,7 @@ test("I2: reintento con SESSION_ALREADY_EXISTS para ese nombre se toma como lanz
   } });
   await h.app.onInboxEvent(EVENT);
   const [p] = h.store.listPending();
-  await h.app.onChannelEvent(cb("approve", p.id));
+  await h.app.onChannelEvent(launchWith(p.id, 0));
   assert.equal(h.store.getProposal(p.id)?.status, "failed");
   await h.app.onChannelEvent(cb("retry", p.id));
   const after = h.store.getProposal(p.id)!;

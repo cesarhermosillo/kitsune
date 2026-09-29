@@ -48,6 +48,7 @@ function build(dir: string) {
   const app = createKitsuneApp({
     store, brain: createBrain(engine, { timeoutMs: config.engineTimeoutSec * 1000, secrets: secretList }), ronin, channel,
     policy: createPolicy({ chatId: config.telegram.chatId }), now: Date.now, ttlMs: config.proposals.ttlHours * 3_600_000, log,
+    favoriteWorkflows: config.favoriteWorkflows,
   });
   return { config, store, engine, api, channel, ronin, clickup, app, redact: createRedactor(secretList), watcher: createWatcher({ store, ronin, channel }) };
 }

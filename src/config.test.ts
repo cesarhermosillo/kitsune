@@ -29,10 +29,20 @@ test("loadConfig aplica valores por defecto", () => {
     assert.deepEqual(config, {
       engine: "claude", engineTimeoutSec: 60, poll: { intervalSec: 60 },
       clickup: { listIds: ["901"] }, telegram: { chatId: 42 },
-      ronin: { url: "http://localhost:8787" }, proposals: { ttlHours: 24 },
+      ronin: { url: "http://localhost:8787" }, proposals: { ttlHours: 24 }, favoriteWorkflows: [],
     });
     assert.deepEqual(secrets, { clickupToken: "pk_test", telegramBotToken: "123:abc", roninCapabilityToken: "cap" });
   } finally { cleanup(); }
+});
+
+test("A: loadConfig acepta favoriteWorkflows y rechaza uno inválido", () => {
+  const ok = dir({ config: { ...MIN, favoriteWorkflows: ["claude-plan-codex-impl", "pr-review-merge-dev"] }, env: ENV });
+  try { assert.deepEqual(loadConfig(ok.d).config.favoriteWorkflows, ["claude-plan-codex-impl", "pr-review-merge-dev"]); } finally { ok.cleanup(); }
+
+  for (const bad of [{ ...MIN, favoriteWorkflows: [1, 2] }, { ...MIN, favoriteWorkflows: [""] }, { ...MIN, favoriteWorkflows: "x" }]) {
+    const { d, cleanup } = dir({ config: bad, env: ENV });
+    try { assert.throws(() => loadConfig(d), (e: unknown) => e instanceof ConfigError && /favoriteWorkflows/.test(e.message)); } finally { cleanup(); }
+  }
 });
 
 test("loadConfig rechaza un .env legible por otros usuarios", () => {

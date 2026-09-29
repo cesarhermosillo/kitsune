@@ -107,6 +107,17 @@ test("los datos sobreviven a reabrir la base", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("approveWith exige pending, fija el workflow y transiciona a approved de forma atómica", () => {
+  const store = openStore(":memory:");
+  store.saveEvent(EVENT, 1);
+  const p = store.createProposal(NEW, 10);
+  const approved = store.approveWith(p.id, { workflowId: "wf-2", workflowName: "hotfix" }, 20);
+  assert.deepEqual([approved.status, approved.workflowId, approved.workflowName, approved.updatedAt], ["approved", "wf-2", "hotfix", 20]);
+  assert.throws(() => store.approveWith(p.id, { workflowId: "wf-3", workflowName: "otro" }, 21), InvalidTransition);
+  assert.equal(store.getProposal(p.id)?.workflowId, "wf-2");
+  store.close();
+});
+
 test("C: una base creada antes de title/url migra las columnas con ALTER TABLE", () => {
   const dir = mkdtempSync(join(tmpdir(), "kitsune-db-"));
   try {

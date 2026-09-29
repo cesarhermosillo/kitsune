@@ -5,5 +5,6 @@
   "clickup": { "listIds": ["901200000001"] },
   "telegram": { "chatId": 123456789 },
   "ronin": { "url": "http://localhost:8787" },
-  "proposals": { "ttlHours": 24 }
+  "proposals": { "ttlHours": 24 },
+  "favoriteWorkflows": ["claude-plan-codex-impl", "pr-review-merge-dev"]
 }

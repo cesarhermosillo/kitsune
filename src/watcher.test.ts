@@ -189,3 +189,20 @@ test("publica session_dead cuando la sesión desaparece", async () => {
   await h.watcher.tick();
   assert.ok(h.events.some((e) => e.type === "session_dead" && e.reason === "ya no existe"));
 });
+
+test("publica session_dead con reason 'el agente se detuvo' cuando hay stall", async () => {
+  const shellState = { ...base, attention: "shell", stage: null, stagesDone: 0, stagesTotal: 4 };
+  const h = withBus([[shellState], [shellState]]);
+  await h.watcher.tick();
+  await h.watcher.tick();
+  const deadEvents = h.events.filter((e) => e.type === "session_dead" && e.reason === "el agente se detuvo");
+  assert.equal(deadEvents.length, 1);
+  assert.equal((deadEvents[0] as Extract<KitsuneEvent, { type: "session_dead" }>).name, "cowork-a");
+});
+
+test("publica error cuando falla un gate", async () => {
+  const h = withBus([[{ ...base, gate: { stage: "tests", attempts: 2 } }]]);
+  await h.watcher.tick();
+  const errorEvents = h.events.filter((e) => e.type === "error" && e.message === "Falló el gate de tests en cowork-a");
+  assert.equal(errorEvents.length, 1);
+});

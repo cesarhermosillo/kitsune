@@ -93,6 +93,52 @@ test("I3: la misma pregunta, tras contestarse, se reenvía si vuelve a aparecer"
   assert.equal(h.store.findSessionByQuestion(502)?.name, "cowork-a");
 });
 
+test("B: shell en un solo tick no avisa", async () => {
+  const h = setup(() => [{ ...base, attention: "shell", stage: null, stagesDone: 0, stagesTotal: 4 }]);
+  await h.watcher.tick();
+  assert.deepEqual(h.log, []);
+  assert.notDeepEqual(h.store.listActiveSessions(), []);
+});
+
+test("B: shell en dos ticks consecutivos avisa que la sesión se detuvo y deja de seguirla", async () => {
+  const h = setup(() => [{ ...base, attention: "shell", stage: null, stagesDone: 0, stagesTotal: 4 }]);
+  await h.watcher.tick();
+  await h.watcher.tick();
+  assert.deepEqual(h.log, ["notice:💤 La sesión cowork-a se detuvo: el agente ya no está activo (etapa sin iniciar, 0/4). Revísala en Ronin."]);
+  assert.deepEqual(h.store.listActiveSessions(), []);
+});
+
+test("B: gone en dos ticks consecutivos también avisa (con etapa en curso)", async () => {
+  const h = setup(() => [{ ...base, attention: "gone", stage: "implementing", stagesDone: 1, stagesTotal: 4 }]);
+  await h.watcher.tick();
+  await h.watcher.tick();
+  assert.deepEqual(h.log, ["notice:💤 La sesión cowork-a se detuvo: el agente ya no está activo (etapa implementing, 1/4). Revísala en Ronin."]);
+});
+
+test("B: flujo terminado (stagesDone === stagesTotal) no avisa 'se detuvo' aunque attention sea shell", async () => {
+  const h = setup(() => [{ ...base, attention: "shell", stage: null, stagesDone: 4, stagesTotal: 4, needsInput: false }]);
+  await h.watcher.tick();
+  await h.watcher.tick();
+  assert.ok(!h.log.some((l) => l.includes("se detuvo")));
+});
+
+test("B: el contador se reinicia si la sesión vuelve a estar activa entre dos ticks en shell", async () => {
+  const seq: SessionStatus[] = [
+    { ...base, attention: "shell" },
+    { ...base, attention: "working" },
+    { ...base, attention: "shell" },
+    { ...base, attention: "shell" },
+  ];
+  let i = 0;
+  const h = setup(() => [seq[Math.min(i++, seq.length - 1)]]);
+  await h.watcher.tick();
+  await h.watcher.tick();
+  await h.watcher.tick();
+  assert.deepEqual(h.log, []);
+  await h.watcher.tick();
+  assert.deepEqual(h.log, ["notice:💤 La sesión cowork-a se detuvo: el agente ya no está activo (etapa implementing, 1/4). Revísala en Ronin."]);
+});
+
 test("I3: sin pregunta previa no escribe en la sesión", async () => {
   const h = setup(() => [base]);
   const writes: unknown[] = [];

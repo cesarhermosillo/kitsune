@@ -12,3 +12,4 @@ dist/
 pet/node_modules/
 pet/dist/
 pet/src-tauri/target/
+pet/src-tauri/gen/schemas/

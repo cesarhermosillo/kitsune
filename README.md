@@ -52,6 +52,51 @@ Nothing that creates or changes anything runs without your explicit approval.
    See [docs/telegram-setup.md](docs/telegram-setup.md) for the bot.
 5. `npm run doctor`, then `npm start`.
 
+## Desktop pet (pet/)
+
+A transparent, always-on-top desktop fox (Tauri 2) that mirrors what Kitsune is doing: it sits on
+your screen, plays an idle/working/asking/celebrating/sad animation depending on the daemon's
+state, and pops a speech bubble for new proposals, questions, finished sessions and errors. Clicks
+pass through the transparent parts of the window except over opaque fox pixels or the visible
+bubble, so it never blocks whatever is behind it.
+
+**Requirements**: Rust (`rustup`) and, on macOS, the Xcode Command Line Tools
+(`xcode-select --install`).
+
+**Develop**:
+
+```bash
+cd pet && npm install && npm run sprites && npm run tauri dev
+```
+
+`npm run tauri dev` starts the Vite dev server on `http://localhost:1420` and opens the Tauri
+window pointed at it. Add `"localApi": { "devOrigins": ["http://localhost:1420"] }` to
+`~/.kitsune/config.json` so the daemon accepts requests from the dev webview's origin (the
+packaged app talks to the daemon over `http://127.0.0.1:47823`, authenticating with the token in
+`~/.kitsune/pet-token`).
+
+**Build the app**:
+
+```bash
+npm run tauri build
+```
+
+produces `Kitsune.app` (and a `.dmg`) under `pet/src-tauri/target/release/bundle/`.
+
+**States**: the fox's animation and bubble reflect the daemon's status —
+
+- **sleeping** — no connection to Kitsune, or "No molestar" (DND) is on.
+- **idle** — connected, nothing pending.
+- **sniffing** — an inbox event is being triaged.
+- **alert** — one or more proposals are waiting for your approval on Telegram.
+- **working** — at least one coding session is running.
+- **asking** — a running session needs input.
+- **celebrate** — a session just finished successfully (briefly, then back to idle).
+- **sad** — the last triage failed, a session died, or an error was reported (briefly).
+
+Right-click (or the tray icon) opens a menu: **Ocultar / Mostrar** the window, toggle **No
+molestar**, **Abrir Ronin**, pick the fox's **Tamaño** (2×/3×/4×), and **Salir**.
+
 ## Roadmap
 
 Pet UI · voice · iPhone app (LAN first, then online) · more connectors · auto-approval rules.

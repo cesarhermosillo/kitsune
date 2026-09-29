@@ -39,8 +39,8 @@ Nothing that creates or changes anything runs without your explicit approval.
 ## Local API (desktop pet)
 
 When `localApi.enabled` is `true` (the default), the daemon listens on `127.0.0.1:<localApi.port>`
-(default `47823`) for a **read-only** HTTP API meant for the desktop-pet UI. It never binds to
-anything but loopback, and a busy port just disables it (logged, daemon keeps running).
+(default `47823`) for an HTTP API meant for the desktop-pet UI. It never binds to anything but
+loopback, and a busy port just disables it (logged, daemon keeps running).
 
 - **Auth**: every request needs the header `x-kitsune-token: <token>`, checked with a
   constant-time comparison. The token lives in `~/.kitsune/pet-token` (created on first start,
@@ -49,14 +49,31 @@ anything but loopback, and a busy port just disables it (logged, daemon keeps ru
   (`http://localhost[:port]` or `http://127.0.0.1[:port]`) to `localApi.devOrigins` in
   `config.json`. A request carrying an `Origin` header not on the list gets `403`, even with a
   valid token. Allowed responses carry `Access-Control-Allow-Origin` and `Vary: Origin`; `OPTIONS`
-  preflights from an allowed origin get a `204` with `Access-Control-Allow-Headers: x-kitsune-token`
-  and `Access-Control-Allow-Methods: GET`.
+  preflights from an allowed origin get a `204` with
+  `Access-Control-Allow-Headers: x-kitsune-token, content-type` and
+  `Access-Control-Allow-Methods: GET, POST`.
 - **`GET /state`**: a JSON snapshot — `triaging`, `pending` proposals, active `sessions` (stage,
   progress, pending questions) and the last `error`, if any.
 - **`GET /events`**: Server-Sent Events, one `data:` line per bus event (`triage_started`,
   `event_triaged`, `proposal_created`, `proposal_resolved`, `session_update`, `session_question`,
   `session_done`, `session_dead`, `error`), plus a `: hb` comment every 15 s.
-- No endpoint accepts writes, and no secret (tokens, `.env` contents) is ever exposed by it.
+- **`GET /proposals/:id/options`**: the workflow choices for a pending proposal — `{ title,
+  choices }`, same as Telegram's picker (favorites first, then the rest).
+- **`POST /proposals/:id/launch`**: launches the proposal with the given workflow. Body
+  (`content-type: application/json`, ≤ 4 KB): `{ "workflowId": "<id>" }`. On success:
+  `{ status: "launched", sessionName }`.
+- **`POST /proposals/:id/reject`**: ignores a pending proposal (no body). On success:
+  `{ status: "rejected" }`.
+- **`POST /proposals/:id/retry`**: relaunches a failed proposal with its previous workflow (no
+  body). Same success shape as `launch`.
+- Proposal ids are the 10-char `[a-z0-9]` id from `/state`; anything else 404s. A wrong method on
+  any of these routes gets `405`.
+- Errors from the three POST routes respond `{ code, message }` (message capped at 500 chars) with
+  the HTTP status mapped from the outcome: `404 not_found` · `409 not_pending`/`expired` ·
+  `400 unknown_workflow` or an invalid body (`bad_request`) · `413` (body over 4 KB) ·
+  `415` (`launch` without a JSON content-type) · `503 ronin_unavailable` · `502 launch_failed`.
+  On success, the routes answer `200` with the result (minus the internal `ok` flag).
+- No secret (tokens, `.env` contents) is ever exposed by this API.
 
 ## Setup
 

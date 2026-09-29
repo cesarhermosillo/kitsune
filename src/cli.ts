@@ -72,6 +72,12 @@ async function start(dir: string) {
         port: k.config.localApi.port, token: ensurePetToken(dir),
         allowedOrigins: ["tauri://localhost", ...k.config.localApi.devOrigins],
         snapshot: k.tracker.snapshot, bus: k.events,
+        actions: {
+          options: (id) => k.app.workflowOptions(id),
+          launch: (id, wf) => k.app.launchProposal(id, wf, "pet"),
+          reject: (id) => k.app.rejectProposal(id, "pet"),
+          retry: (id) => k.app.retryProposal(id, "pet"),
+        },
       });
       log(`API local para la mascota en http://127.0.0.1:${localApi.port}`);
     } catch (error) {

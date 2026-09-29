@@ -85,14 +85,20 @@ La Fase 2 se divide en tres subproyectos, cada uno con su propio spec y plan:
   - Al arrancar, el daemon crea `~/.kitsune/pet-token` (32 bytes aleatorios en hex, permisos `0600`)
     si no existe.
   - Toda petición debe traer la cabecera `x-kitsune-token`, que se compara en tiempo constante.
-  - Se rechaza toda petición con cabecera `Origin`, para que ninguna página web pueda consultarla.
+  - La cabecera `Origin` solo se acepta si está en una lista blanca. La webview de la mascota siempre
+    la envía: `tauri://localhost` en producción, y en desarrollo el origen de Vite que se configure
+    en `localApi.devOrigins`. Cualquier otro origen recibe 403. Una página web no puede falsificar
+    `tauri://localhost`, así que ningún navegador puede consultar la API. Las peticiones sin `Origin`
+    (curl o la CLI) solo necesitan el token. Para los orígenes permitidos se responden los preflight
+    `OPTIONS` de CORS.
 - **Endpoints:**
-  - `GET /state` → `{ status, pending: [{ id, title, url, repo, workflow, createdAt }], sessions: [{ name, workflow,
-    stage, stagesDone, stagesTotal, needsInput, question? }], lastError?: { message, at } }`. Cada texto se acota
-    a 500 caracteres.
+  - `GET /state` → `{ triaging: boolean, pending: [{ id, title, url, repo, workflow, createdAt }], sessions: [{ name,
+    stage, stagesDone, stagesTotal, needsInput, question? }], lastError: { message, at } | null }`. Cada texto se
+    acota a 500 caracteres. La mascota calcula su estado a partir de esta foto.
   - `GET /events` → stream SSE con eventos
-    `{ type, at, ... }`, donde `type` es uno de `event_triaged | proposal_created | proposal_resolved |
+    `{ type, at, ... }`, donde `type` es uno de `triage_started | event_triaged | proposal_created | proposal_resolved |
     session_update | session_question | session_done | session_dead | error`, más un latido cada 15 s.
+    `triage_started` alimenta el estado `sniffing`.
 - **Fuente de los eventos:** un `EventBus` interno. `app.ts` y `watcher.ts` publican en los mismos
   puntos donde hoy envían mensajes a Telegram. El bus no tiene historial: un cliente que se reconecta
   pide `/state`.
@@ -130,7 +136,7 @@ La Fase 2 se divide en tres subproyectos, cada uno con su propio spec y plan:
 ## 8. Pruebas
 
 - **Daemon (`node --test`):**
-  - Sin token, con token incorrecto o con `Origin` → 401/403.
+  - Sin token o con token incorrecto → 401; con un `Origin` fuera de la lista blanca → 403; el preflight `OPTIONS` de un origen permitido → 204 con cabeceras CORS.
   - `/state` refleja la base (propuestas pendientes y sesiones seguidas).
   - Los eventos publicados en el bus llegan por SSE, y el latido también.
   - Ninguna respuesta contiene los valores de los secretos.

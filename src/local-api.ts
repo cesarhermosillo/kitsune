@@ -39,8 +39,16 @@ function sendActionResult(res: ServerResponse, result: OptionsResult | LaunchRes
     .end(JSON.stringify({ code: result.code, message: clip(result.message) }));
 }
 
+function sendError(res: ServerResponse, status: number, code: string, message: string, headers: Record<string, string> = {}): void {
+  res.writeHead(status, { "content-type": "application/json", ...headers }).end(JSON.stringify({ code, message }));
+}
+
 function sendBadRequest(res: ServerResponse): void {
-  res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ code: "bad_request", message: "Cuerpo inválido" }));
+  sendError(res, 400, "bad_request", "Cuerpo inválido");
+}
+
+function sendMethodNotAllowed(res: ServerResponse): void {
+  sendError(res, 405, "method_not_allowed", "Método no permitido");
 }
 
 /**
@@ -99,17 +107,17 @@ export function startLocalApi(opts: LocalApiOptions): Promise<LocalApi> {
     req: IncomingMessage, res: ServerResponse, actions: LocalActions, id: string, action: "options" | "launch" | "reject" | "retry",
   ): Promise<void> {
     if (action === "options") {
-      if (req.method !== "GET") { res.writeHead(405).end(); return; }
+      if (req.method !== "GET") { sendMethodNotAllowed(res); return; }
       sendActionResult(res, await actions.options(id));
       return;
     }
-    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    if (req.method !== "POST") { sendMethodNotAllowed(res); return; }
     if (action === "reject") { sendActionResult(res, await actions.reject(id)); return; }
     if (action === "retry") { sendActionResult(res, await actions.retry(id)); return; }
     // action === "launch": único que exige content-type y cuerpo.
     const contentType = req.headers["content-type"];
     if (typeof contentType !== "string" || !contentType.toLowerCase().startsWith("application/json")) {
-      res.writeHead(415).end();
+      sendError(res, 415, "unsupported_media_type", "Se requiere content-type: application/json");
       return;
     }
     const raw = await readBody(req, MAX_BODY_BYTES);
@@ -117,7 +125,7 @@ export function startLocalApi(opts: LocalApiOptions): Promise<LocalApi> {
       // La petición se destruye solo tras enviar la respuesta: destruirla antes cortaría la
       // conexión (RST) antes de que el 413 llegara al cliente.
       res.once("finish", () => req.destroy());
-      res.writeHead(413, { connection: "close" }).end();
+      sendError(res, 413, "payload_too_large", "Cuerpo demasiado grande (máximo 4 KB)", { connection: "close" });
       return;
     }
     let parsed: unknown;

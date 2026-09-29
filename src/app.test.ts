@@ -4,6 +4,7 @@ import { createKitsuneApp, processUpdates, sessionNameFor, type KitsuneApp } fro
 import { TriageError, type Brain } from "./brain.js";
 import { workflowCheck, type Channel } from "./channels/telegram.js";
 import { createEventBus, type EventBus, type KitsuneEvent } from "./events.js";
+import { startLocalApi } from "./local-api.js";
 import { createPolicy } from "./policy.js";
 import { RoninError, type RoninClient } from "./ronin-client.js";
 import { openStore } from "./store.js";
@@ -644,6 +645,15 @@ test("workflowOptions: el sugerido favorito va en la posición de favoritos; sin
   assert.equal(h.store.getProposal(p.id)?.status, "pending");
 });
 
+test("F5: workflowOptions acota el title a 500 caracteres, como /state", async () => {
+  const h = harness();
+  await h.app.onInboxEvent({ ...EVENT, title: "t".repeat(600) });
+  const [p] = h.store.listPending();
+  const r = await h.app.workflowOptions(p.id);
+  assert.ok(r.ok);
+  assert.equal(r.title, "t".repeat(500));
+});
+
 test("launchProposal por id lanza una vez y deja la propuesta launched", async () => {
   const c = captured();
   const h = harness({ events: c.bus });
@@ -746,6 +756,71 @@ test("rejectProposal ignora, edita Telegram y emite proposal_resolved rejected; 
   // Y el ✅ de Telegram ya no lanza.
   await h.app.onChannelEvent(launchWith(p.id, 0));
   assert.equal(h.launches.length, 0);
+});
+
+test("F1: rejectProposal de una propuesta failed → rejected, edita Telegram y emite proposal_resolved", async () => {
+  const c = captured();
+  const h = harness({ events: c.bus, launch: async () => { throw new RoninError("UNREACHABLE", "Ronin no responde"); } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.launchProposal(p.id, "wf-1", "pet");
+  assert.equal(h.store.getProposal(p.id)?.status, "failed");
+  assert.deepEqual(await h.app.rejectProposal(p.id, "pet"), { ok: true, status: "rejected" });
+  assert.equal(h.store.getProposal(p.id)?.status, "rejected");
+  assert.ok(h.log.includes("update:rejected:❌ Ignorada"));
+  const resolved = c.events.filter((e) => e.type === "proposal_resolved") as Extract<KitsuneEvent, { type: "proposal_resolved" }>[];
+  assert.deepEqual(resolved.map((e) => e.status), ["failed", "rejected"]);
+  // Ya ignorada: ni retry ni otro reject.
+  assert.deepEqual(await h.app.retryProposal(p.id, "pet"), { ok: false, code: "not_pending", message: "Ya no está vigente" });
+  assert.deepEqual(await h.app.rejectProposal(p.id, "pet"), { ok: false, code: "not_pending", message: "Ya no está vigente" });
+  assert.equal(h.launches.length, 1);
+});
+
+test("F1: ❌ de Telegram sobre una propuesta failed también la ignora", async () => {
+  const h = harness({ launch: async () => { throw new RoninError("UNREACHABLE", "Ronin no responde"); } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.launchProposal(p.id, "wf-1", "pet");
+  await h.app.onChannelEvent(cb("reject", p.id));
+  assert.equal(h.store.getProposal(p.id)?.status, "rejected");
+});
+
+test("F1: POST /proposals/:id/reject sobre una propuesta failed → 200 rejected (API local con la app real)", async () => {
+  const h = harness({ launch: async () => { throw new RoninError("UNREACHABLE", "Ronin no responde"); } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.launchProposal(p.id, "wf-1", "pet");
+  assert.equal(h.store.getProposal(p.id)?.status, "failed");
+  const token = "f".repeat(64);
+  const api = await startLocalApi({
+    port: 0, token, allowedOrigins: ["tauri://localhost"], bus: createEventBus(),
+    snapshot: () => ({ triaging: false, pending: [], sessions: [], lastError: null }),
+    actions: {
+      options: (id) => h.app.workflowOptions(id),
+      launch: (id, workflowId) => h.app.launchProposal(id, workflowId, "pet"),
+      reject: (id) => h.app.rejectProposal(id, "pet"),
+      retry: (id) => h.app.retryProposal(id, "pet"),
+    },
+  });
+  try {
+    const r = await fetch(`http://127.0.0.1:${api.port}/proposals/${p.id}/reject`, { method: "POST", headers: { "x-kitsune-token": token, origin: "tauri://localhost" } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(await r.json(), { status: "rejected" });
+    assert.equal(h.store.getProposal(p.id)?.status, "rejected");
+  } finally { await api.close(); }
+});
+
+test("F1: rejectProposal de approved o launched → not_pending", async () => {
+  const h = harness();
+  await h.app.onInboxEvent(EVENT);
+  await h.app.onInboxEvent({ ...EVENT, id: "task_assigned:t2" });
+  const [a, b] = h.store.listPending();
+  await h.app.launchProposal(a.id, "wf-1", "pet");
+  assert.equal(h.store.getProposal(a.id)?.status, "launched");
+  assert.deepEqual(await h.app.rejectProposal(a.id, "pet"), { ok: false, code: "not_pending", message: "Ya no está vigente" });
+  h.store.transition(b.id, "approved", 2);
+  assert.deepEqual(await h.app.rejectProposal(b.id, "pet"), { ok: false, code: "not_pending", message: "Ya no está vigente" });
+  assert.deepEqual([h.store.getProposal(a.id)?.status, h.store.getProposal(b.id)?.status], ["launched", "approved"]);
 });
 
 test("retryProposal solo desde failed; desde pending → not_pending", async () => {

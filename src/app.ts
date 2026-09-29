@@ -49,13 +49,18 @@ const ACTION_MESSAGES: Record<Exclude<ActionErrorCode, "launch_failed">, string>
 const actionError = (code: Exclude<ActionErrorCode, "launch_failed">): ActionError => ({ ok: false, code, message: ACTION_MESSAGES[code] });
 
 /** Valida existencia y estado antes de actuar: not_found, expired, o not_pending si no está en `required`. */
-function checkState(p: Proposal | null, required: Proposal["status"]): ActionError | null {
+function checkState(p: Proposal | null, ...required: Proposal["status"][]): ActionError | null {
   if (!p) return actionError("not_found");
   if (p.status === "expired") return actionError("expired");
-  if (p.status !== required) return actionError("not_pending");
+  if (!required.includes(p.status)) return actionError("not_pending");
   return null;
 }
 
+/** Estados desde los que se puede ignorar (❌): pendiente, o fallida (spec §4, fila de reintento). */
+const REJECTABLE: Proposal["status"][] = ["pending", "failed"];
+
+/** Como /state: los textos que van a la mascota se acotan a 500 caracteres (sin elipsis). */
+const clipTitle = (text: string) => text.slice(0, 500);
 const clip = (text: string, max = 500) => (text.length > max ? `${text.slice(0, max)}…` : text);
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -230,9 +235,12 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
     return launchOutcome(p.id);
   }
 
-  /** pending → rejected (atómico, desde `pending`). Lanza InvalidTransition si otro canal ganó. */
+  /**
+   * pending|failed → rejected, atómico desde el estado que se leyó (`p.status`): si otro canal
+   * lo cambió entretanto, `transition` lanza InvalidTransition (el llamador lo vuelve not_pending).
+   */
   async function doReject(p: Proposal, via: Via): Promise<RejectResult> {
-    const rejected = store.transition(p.id, "rejected", deps.now(), undefined, "pending");
+    const rejected = store.transition(p.id, "rejected", deps.now(), undefined, p.status);
     store.audit("user", "reject", p.id, { via }, deps.now());
     emit({ type: "proposal_resolved", id: p.id, status: "rejected" });
     await edit(rejected, "❌ Ignorada");
@@ -309,7 +317,7 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
           return;
         }
         case "reject": {
-          expect(p, "pending");
+          if (!REJECTABLE.includes(p.status)) throw new InvalidTransition(p.status, "rejected");
           await ack(event.callbackId, "Ignorada");
           await doReject(p, "telegram");
           return;
@@ -473,7 +481,7 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
       if (invalid) return invalid;
       const catalog = await catalogOrNull();
       if (!catalog) return actionError("ronin_unavailable");
-      return { ok: true, title: p!.title || p!.origin, choices: workflowChoices(p!, catalog, deps.favoriteWorkflows) };
+      return { ok: true, title: clipTitle(p!.title || p!.origin), choices: workflowChoices(p!, catalog, deps.favoriteWorkflows) };
     },
     async launchProposal(id, workflowId, via) {
       const p = store.getProposal(id);
@@ -487,7 +495,7 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
     },
     async rejectProposal(id, via) {
       const p = store.getProposal(id);
-      const invalid = checkState(p, "pending");
+      const invalid = checkState(p, ...REJECTABLE);
       if (invalid) return invalid;
       return guarded(() => doReject(p!, via));
     },

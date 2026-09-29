@@ -192,6 +192,7 @@ test("POST /launch sin content-type → 415", async () => {
   await withApi(async (base) => {
     const r = await fetch(`${base}/proposals/${ID}/launch`, { method: "POST", headers: AUTH, body: JSON.stringify({ workflowId: "wf-1" }) });
     assert.equal(r.status, 415);
+    assert.equal((await r.json()).code, "unsupported_media_type");
     assert.equal(calls.length, 0);
   }, 15_000, actions);
 });
@@ -204,6 +205,7 @@ test("cuerpo de 5000 bytes → 413", async () => {
       body: JSON.stringify({ workflowId: "x".repeat(5000) }),
     });
     assert.equal(r.status, 413);
+    assert.equal((await r.json()).code, "payload_too_large");
     assert.equal(calls.length, 0);
   }, 15_000, actions);
 });
@@ -252,6 +254,12 @@ test("GET /proposals/:id/launch → 405", async () => {
   await withApi(async (base) => {
     const r = await fetch(`${base}/proposals/${ID}/launch`, { headers: AUTH });
     assert.equal(r.status, 405);
+    assert.equal((await r.json()).code, "method_not_allowed");
+    const r2 = await fetch(`${base}/proposals/${ID}/options`, { method: "POST", headers: AUTH });
+    assert.equal(r2.status, 405);
+    const body = await r2.json();
+    assert.equal(body.code, "method_not_allowed");
+    assert.equal(typeof body.message, "string");
     assert.equal(calls.length, 0);
   }, 15_000, actions);
 });
@@ -295,6 +303,19 @@ test("id con formato inválido → 404", () => withApi(async (base) => {
   const r = await fetch(`${base}/proposals/../launch`, { method: "POST", headers: { ...AUTH, "content-type": "application/json" } });
   assert.equal(r.status, 404);
 }));
+
+test("F8: id de 11 caracteres o con mayúsculas en /launch → 404 y el falso no se llamó", async () => {
+  const { actions, calls } = fakeActions();
+  await withApi(async (base) => {
+    for (const bad of ["abcdefghijk", "ABCDEFGHIJ", "abcdeFghij"]) {
+      const r = await fetch(`${base}/proposals/${bad}/launch`, {
+        method: "POST", headers: { ...AUTH, "content-type": "application/json" }, body: JSON.stringify({ workflowId: "wf-1" }),
+      });
+      assert.equal(r.status, 404, bad);
+    }
+    assert.equal(calls.length, 0);
+  }, 15_000, actions);
+});
 
 test("retry y reject no exigen content-type ni cuerpo", async () => {
   const { actions, calls } = fakeActions();

@@ -85,7 +85,8 @@ produces `Kitsune.app` (and a `.dmg`) under `pet/src-tauri/target/release/bundle
 
 **States**: the fox's animation and bubble reflect the daemon's status —
 
-- **sleeping** — no connection to Kitsune, or "No molestar" (DND) is on.
+- **sleeping** — "No molestar" (DND) is on, or 10+ minutes without activity.
+- **offline** — no connection to Kitsune (grey, semi-transparent).
 - **idle** — connected, nothing pending.
 - **sniffing** — an inbox event is being triaged.
 - **alert** — one or more proposals are waiting for your approval on Telegram.

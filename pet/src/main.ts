@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import meta from "../public/sprites.json";
 import { startClient } from "./client";
+import { expandedRows } from "./expanded";
 import { isOpaqueAt } from "./hit";
 import { applyEvent, applySnapshot, currentAnimation, initialModel, setConnected, summary, visibleBubble, type Model } from "./model";
 import { frameIndex } from "./player";
@@ -52,17 +53,46 @@ function draw() {
   ctx.filter = current === "offline" ? "grayscale(1)" : "none";
   ctx.drawImage(sheet, frame.x, frame.y, meta.frameSize, meta.frameSize, 0, 0, canvas.width, canvas.height);
   const bubble = visibleBubble(model, now);
-  const text = expanded ? expandedText() : bubble?.text ?? (hovering ? summary(model.state) : "");
-  bubbleEl.textContent = text;
-  bubbleEl.classList.toggle("show", text.length > 0);
+  if (expanded) {
+    renderExpandedBubble();
+    bubbleEl.classList.add("show");
+  } else {
+    const text = bubble?.text ?? (hovering ? summary(model.state) : "");
+    bubbleEl.textContent = text;
+    bubbleEl.classList.toggle("show", text.length > 0);
+  }
   requestAnimationFrame(draw);
 }
 
-function expandedText(): string {
-  const lines = [summary(model.state)];
-  for (const p of model.state.pending) lines.push(`• ${p.title} (${p.workflow})`);
-  for (const s of model.state.sessions) lines.push(`• ${s.name} · ${s.stage ?? "—"} ${s.stagesDone}/${s.stagesTotal}${s.needsInput ? " · pregunta" : ""}`);
-  return lines.join("\n");
+// Spec §4: "Clic: burbuja expandida con la lista de pendientes y los enlaces
+// a ClickUp y Ronin." Built as DOM nodes (never innerHTML with remote
+// strings) so the ClickUp titles/urls from the daemon can't inject markup.
+function renderExpandedBubble() {
+  bubbleEl.textContent = "";
+  const summaryLine = document.createElement("div");
+  summaryLine.textContent = summary(model.state);
+  bubbleEl.appendChild(summaryLine);
+  for (const row of expandedRows(model.state)) {
+    const line = document.createElement("div");
+    line.textContent = `• ${row.label} `;
+    const link = document.createElement("a");
+    link.href = "#";
+    if (row.kind === "clickup") {
+      link.textContent = "Abrir en ClickUp";
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        void invoke("open_url", { url: row.url });
+      });
+    } else {
+      link.textContent = "Ver en Ronin";
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        void invoke("open_ronin");
+      });
+    }
+    line.appendChild(link);
+    bubbleEl.appendChild(line);
+  }
 }
 
 // Los clics atraviesan la ventana salvo sobre píxeles opacos del zorro o sobre la burbuja visible.

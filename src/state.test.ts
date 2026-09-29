@@ -35,6 +35,18 @@ test("triaging, sesiones, preguntas y lastError siguen al bus", () => {
   assert.equal(tracker.snapshot().sessions[0].needsInput, false);
 });
 
+test("nombre y stage de la sesión se acotan a 500", () => {
+  const { store, bus, tracker } = setup();
+  store.saveEvent({ source: "clickup", id: "e1", kind: "task_assigned", title: "", body: "", url: "", author: "", at: "", meta: { taskId: "", listId: "", listName: "", tags: [] } }, 1);
+  const p = store.createProposal({ eventId: "e1", repo: "r", workflowId: "w", workflowName: "w", request: "x", origin: "o", title: "", url: "" }, 1);
+  const longName = "n".repeat(600);
+  store.trackSession(longName, p.id);
+  bus.publish({ type: "session_update", name: longName, stage: "s".repeat(600), stagesDone: 1, stagesTotal: 2 });
+  const session = tracker.snapshot().sessions[0];
+  assert.equal(session.name.length, 500);
+  assert.equal(session.stage?.length, 500);
+});
+
 test("dispose deja de escuchar el bus", () => {
   const { bus, tracker } = setup();
   tracker.dispose();

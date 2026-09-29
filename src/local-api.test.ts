@@ -80,3 +80,79 @@ test("puerto ocupado rechaza la promesa sin lanzar", async () => {
 test("solo escucha en 127.0.0.1", () => withApi(async (base) => {
   assert.match(base, /^http:\/\/127\.0\.0\.1:/);
 }));
+
+test("host expone la dirección real vinculada (127.0.0.1)", async () => {
+  const bus = createEventBus(() => 7);
+  const api = await startLocalApi({ port: 0, token: TOKEN, allowedOrigins: [], snapshot: () => STATE, bus });
+  try {
+    assert.equal(api.host, "127.0.0.1");
+  } finally { await api.close(); }
+});
+
+test("origin fuera de la lista blanca en OPTIONS → 403", () => withApi(async (base) => {
+  const r = await fetch(`${base}/state`, { method: "OPTIONS", headers: { origin: "https://evil.example", "access-control-request-headers": "x-kitsune-token" } });
+  assert.equal(r.status, 403);
+}));
+
+test("token del largo correcto pero valor incorrecto → 401", () => withApi(async (base) => {
+  const r = await fetch(`${base}/state`, { headers: { "x-kitsune-token": "0".repeat(64) } });
+  assert.equal(r.status, 401);
+}));
+
+test("401 a un origen permitido conserva access-control-allow-origin", () => withApi(async (base) => {
+  const r = await fetch(`${base}/state`, { headers: { origin: "tauri://localhost" } });
+  assert.equal(r.status, 401);
+  assert.equal(r.headers.get("access-control-allow-origin"), "tauri://localhost");
+}));
+
+test("respuesta a origen permitido lleva vary: Origin", () => withApi(async (base) => {
+  const r = await fetch(`${base}/state`, { headers: { "x-kitsune-token": TOKEN, origin: "tauri://localhost" } });
+  assert.equal(r.headers.get("vary"), "Origin");
+}));
+
+test("snapshot que lanza → 500 sin tumbar el servidor", async () => {
+  const bus = createEventBus(() => 7);
+  let shouldThrow = true;
+  const api = await startLocalApi({
+    port: 0, token: TOKEN, allowedOrigins: [],
+    snapshot: () => {
+      if (shouldThrow) throw new Error("boom");
+      return STATE;
+    },
+    bus,
+  });
+  try {
+    const r1 = await fetch(`http://127.0.0.1:${api.port}/state`, { headers: { "x-kitsune-token": TOKEN } });
+    assert.equal(r1.status, 500);
+    shouldThrow = false;
+    const r2 = await fetch(`http://127.0.0.1:${api.port}/state`, { headers: { "x-kitsune-token": TOKEN } });
+    assert.equal(r2.status, 200);
+    assert.deepEqual(await r2.json(), STATE);
+  } finally { await api.close(); }
+});
+
+test("SSE acota cada campo de texto del evento a 500", () => withApi(async (base, bus) => {
+  const r = await fetch(`${base}/events`, { headers: { "x-kitsune-token": TOKEN } });
+  const reader = r.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = decoder.decode((await reader.read()).value);
+  bus.publish({ type: "error", message: "x".repeat(600) });
+  while (!text.includes("data:")) text += decoder.decode((await reader.read()).value);
+  const match = text.match(/data: (\{.*?\})\n\n/);
+  assert.ok(match);
+  const parsed = JSON.parse(match![1]);
+  assert.equal(parsed.message.length, 500);
+  await reader.cancel();
+}));
+
+test("close() no lanza si se publica justo mientras cierra", async () => {
+  const bus = createEventBus(() => 7);
+  const api = await startLocalApi({ port: 0, token: TOKEN, allowedOrigins: [], snapshot: () => STATE, bus });
+  const r = await fetch(`http://127.0.0.1:${api.port}/events`, { headers: { "x-kitsune-token": TOKEN } });
+  const reader = r.body!.getReader();
+  await reader.read();
+  const closing = api.close();
+  assert.doesNotThrow(() => bus.publish({ type: "session_done", name: "x" }));
+  await reader.cancel().catch(() => {});
+  await closing;
+});

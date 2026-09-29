@@ -21,7 +21,11 @@ export interface Model {
   lastActivityAt: number;
   bubble: Bubble | null;
   dnd: boolean;
+  /** Motivo de la última desconexión; null mientras hay conexión o antes del primer intento. */
+  offlineReason: string | null;
 }
+
+export const OFFLINE_TEXT = "Kitsune no está corriendo";
 
 export const EMPTY_STATE: PetState = {
   triaging: false,
@@ -42,23 +46,37 @@ export function initialModel(now: number): Model {
     lastActivityAt: now,
     bubble: null,
     dnd: false,
+    offlineReason: null,
   };
 }
 
 export function setConnected(
   m: Model,
   connected: boolean,
-  now: number
+  now: number,
+  reason?: string
 ): Model {
   return {
     ...m,
     connected,
+    offlineReason: connected ? null : (reason ?? ""),
     lastActivityAt: connected ? now : m.lastActivityAt,
   };
 }
 
+/** Spec §3/§7: texto de la burbuja mientras no hay conexión (null si hay conexión o aún no se intentó). */
+export function offlineText(m: Model): string | null {
+  if (m.connected || m.offlineReason === null) return null;
+  return /token/i.test(m.offlineReason) ? m.offlineReason : OFFLINE_TEXT;
+}
+
 export function applySnapshot(m: Model, s: PetState, _now: number): Model {
-  return { ...m, state: s };
+  // Tras reconectar, una pregunta fija que ya se contestó (o cuya sesión terminó) no debe quedarse.
+  const b = m.bubble;
+  const stale =
+    b?.sticky &&
+    !s.sessions.some((x) => x.name === b.session && x.needsInput);
+  return { ...m, state: s, bubble: stale ? null : b };
 }
 
 export function applyEvent(m: Model, e: KitsuneEvent, now: number): Model {

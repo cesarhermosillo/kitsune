@@ -12,6 +12,7 @@ export interface KitsuneConfig {
   ronin: { url: string };
   proposals: { ttlHours: number };
   favoriteWorkflows: string[];
+  localApi: { enabled: boolean; port: number; devOrigins: string[] };
 }
 export interface Secrets { clickupToken: string; telegramBotToken: string; roninCapabilityToken: string }
 export class ConfigError extends Error {}
@@ -66,6 +67,17 @@ export function loadConfig(dir: string): { config: KitsuneConfig; secrets: Secre
   // Dedupe preservando el orden: un mismo workflow repetido en config.json no debe producir botones duplicados.
   const favoriteWorkflows = [...new Set(rawFavorites as string[])];
 
+  const rawApi = raw.localApi ?? {};
+  if (typeof rawApi !== "object" || rawApi === null || Array.isArray(rawApi)) throw new ConfigError("localApi debe ser un objeto");
+  const enabled = rawApi.enabled ?? true;
+  if (typeof enabled !== "boolean") throw new ConfigError("localApi.enabled debe ser true o false");
+  const port = rawApi.port ?? 47823;
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1024 || port > 65535) throw new ConfigError("localApi.port debe ser un entero entre 1024 y 65535");
+  const devOrigins = rawApi.devOrigins ?? [];
+  if (!Array.isArray(devOrigins) || !devOrigins.every((o) => typeof o === "string" && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o))) {
+    throw new ConfigError("localApi.devOrigins debe ser una lista de orígenes http://localhost[:puerto]");
+  }
+
   const config: KitsuneConfig = {
     engine,
     engineTimeoutSec: positive(raw.engineTimeoutSec, 60, "engineTimeoutSec"),
@@ -75,6 +87,7 @@ export function loadConfig(dir: string): { config: KitsuneConfig; secrets: Secre
     ronin: { url: url.replace(/\/+$/, "") },
     proposals: { ttlHours: positive(raw.proposals?.ttlHours, 24, "proposals.ttlHours") },
     favoriteWorkflows,
+    localApi: { enabled, port, devOrigins },
   };
 
   const envPath = join(dir, ".env");

@@ -30,6 +30,7 @@ test("loadConfig aplica valores por defecto", () => {
       engine: "claude", engineTimeoutSec: 60, poll: { intervalSec: 60 },
       clickup: { listIds: ["901"] }, telegram: { chatId: 42 },
       ronin: { url: "http://localhost:8787" }, proposals: { ttlHours: 24 }, favoriteWorkflows: [],
+      localApi: { enabled: true, port: 47823, devOrigins: [] },
     });
     assert.deepEqual(secrets, { clickupToken: "pk_test", telegramBotToken: "123:abc", roninCapabilityToken: "cap" });
   } finally { cleanup(); }
@@ -79,4 +80,21 @@ test("loadConfig rechaza un motor desconocido", () => {
 test("loadConfig sin config.json explica cómo crearlo", () => {
   const { d, cleanup } = dir({ env: ENV });
   try { assert.throws(() => loadConfig(d), (e: unknown) => e instanceof ConfigError && /config\.json/.test(e.message)); } finally { cleanup(); }
+});
+
+test("localApi tiene valores por defecto", () => {
+  const { d, cleanup } = dir({ config: MIN, env: ENV });
+  try { assert.deepEqual(loadConfig(d).config.localApi, { enabled: true, port: 47823, devOrigins: [] }); } finally { cleanup(); }
+});
+
+test("localApi valida puerto y devOrigins", () => {
+  for (const bad of [{ port: 80 }, { port: 70000 }, { port: "1" }, { devOrigins: ["https://evil.example"] }, { devOrigins: "x" }, { enabled: "si" }]) {
+    const { d, cleanup } = dir({ config: { ...MIN, localApi: bad }, env: ENV });
+    try { assert.throws(() => loadConfig(d), (e: unknown) => e instanceof ConfigError && /localApi/.test(e.message)); } finally { cleanup(); }
+  }
+});
+
+test("localApi acepta devOrigins de localhost", () => {
+  const { d, cleanup } = dir({ config: { ...MIN, localApi: { devOrigins: ["http://localhost:1420"] } }, env: ENV });
+  try { assert.deepEqual(loadConfig(d).config.localApi.devOrigins, ["http://localhost:1420"]); } finally { cleanup(); }
 });

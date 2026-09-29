@@ -8,15 +8,27 @@ describe("expandedRows", () => {
     expect(expandedRows(EMPTY_STATE)).toEqual([]);
   });
 
-  it("returns one clickup row per pending proposal, carrying its url", () => {
+  it("returns one clickup row per pending proposal, carrying its url, proposalId and status", () => {
     const state: PetState = {
       ...EMPTY_STATE,
       pending: [
-        { id: "p1", title: "Arreglar CSS", url: "https://app.clickup.com/t/p1", repo: "kitsune", workflow: "fix", createdAt: 0 },
+        { id: "p1", title: "Arreglar CSS", url: "https://app.clickup.com/t/p1", repo: "kitsune", workflow: "fix", createdAt: 0, status: "pending" },
       ],
     };
     expect(expandedRows(state)).toEqual([
-      { label: "Arreglar CSS (fix)", kind: "clickup", url: "https://app.clickup.com/t/p1" },
+      { label: "Arreglar CSS (fix)", kind: "clickup", url: "https://app.clickup.com/t/p1", proposalId: "p1", status: "pending" },
+    ]);
+  });
+
+  it("carries status: \"failed\" for failed proposals", () => {
+    const state: PetState = {
+      ...EMPTY_STATE,
+      pending: [
+        { id: "p2", title: "Deploy roto", url: "https://app.clickup.com/t/p2", repo: "kitsune", workflow: "deploy", createdAt: 0, status: "failed" },
+      ],
+    };
+    expect(expandedRows(state)).toEqual([
+      { label: "Deploy roto (deploy)", kind: "clickup", url: "https://app.clickup.com/t/p2", proposalId: "p2", status: "failed" },
     ]);
   });
 
@@ -37,7 +49,7 @@ describe("expandedRows", () => {
   it("lists pending rows before session rows", () => {
     const state: PetState = {
       ...EMPTY_STATE,
-      pending: [{ id: "p1", title: "A", url: "https://x", repo: "r", workflow: "w", createdAt: 0 }],
+      pending: [{ id: "p1", title: "A", url: "https://x", repo: "r", workflow: "w", createdAt: 0, status: "pending" }],
       sessions: [{ name: "s1", stage: "x", stagesDone: 1, stagesTotal: 1, needsInput: false }],
     };
     expect(expandedRows(state).map((r) => r.kind)).toEqual(["clickup", "ronin"]);

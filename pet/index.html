@@ -11,6 +11,9 @@
         font: 600 12px/1.35 -apple-system, system-ui, sans-serif; display: none; white-space: pre-line; box-sizing: border-box; }
       #bubble.show { display: block; }
       #bubble a { color: #6b4fd6; }
+      #bubble button { font: inherit; font-size: 11px; margin: 4px 4px 0 0; padding: 2px 8px; border: 1.5px solid #1a1426; border-radius: 999px; background: #fff; color: #1a1426; cursor: pointer; }
+      #bubble button.danger { background: #d64545; color: #fff; border-color: #8a1f1f; }
+      #bubble .row { margin-top: 6px; }
       #bubble-tail { position: absolute; width: 12px; height: 14px; display: none; pointer-events: none; }
       #bubble.show + #bubble-tail { display: block; }
       #bubble-tail::before { content: ""; position: absolute; left: 0; top: 0; border-top: 14px solid #1a1426; border-left: 12px solid transparent; }

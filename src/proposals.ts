@@ -3,7 +3,7 @@ import type { ProposalStatus } from "./types.js";
 const ALLOWED: Record<ProposalStatus, ProposalStatus[]> = {
   pending: ["approved", "rejected", "expired"],
   approved: ["launched", "failed"],
-  failed: ["approved"],
+  failed: ["approved", "rejected"],
   launched: [],
   rejected: [],
   expired: [],

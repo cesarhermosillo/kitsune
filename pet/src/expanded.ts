@@ -4,6 +4,8 @@ export interface ExpandedRow {
   label: string;
   kind: "clickup" | "ronin";
   url?: string;
+  proposalId?: string;
+  status?: "pending" | "failed";
 }
 
 // Pure helper (spec §4): the rows shown in the expanded bubble on click —
@@ -12,7 +14,13 @@ export interface ExpandedRow {
 export function expandedRows(state: PetState): ExpandedRow[] {
   const rows: ExpandedRow[] = [];
   for (const p of state.pending) {
-    rows.push({ label: `${p.title} (${p.workflow})`, kind: "clickup", url: p.url });
+    rows.push({
+      label: `${p.title} (${p.workflow})`,
+      kind: "clickup",
+      url: p.url,
+      proposalId: p.id,
+      status: p.status,
+    });
   }
   for (const s of state.sessions) {
     rows.push({

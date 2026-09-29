@@ -103,7 +103,13 @@ packaged app talks to the daemon over `http://127.0.0.1:47823`, authenticating w
 npm run tauri build
 ```
 
-produces `Kitsune.app` (and a `.dmg`) under `pet/src-tauri/target/release/bundle/`.
+produces `Kitsune.app` under `pet/src-tauri/target/release/bundle/macos/` (the bundle target is
+`app` only; no `.dmg` is built).
+
+**Port**: the pet expects the daemon's local API on the default port — keep `localApi.port` at
+`47823`. The port is hard-coded in the pet (the `API` constant in `pet/src/main.ts`) and in the
+Tauri CSP (`connect-src` in `pet/src-tauri/tauri.conf.json`); changing `localApi.port` requires
+editing both and rebuilding the pet.
 
 **States**: the fox's animation and bubble reflect the daemon's status —
 

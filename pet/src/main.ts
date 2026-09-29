@@ -240,9 +240,15 @@ function renderResultView(f: Extract<Flow, { view: "result" }>) {
 
 // Task 6: dispara la llamada a la API correspondiente a un botón de la burbuja y
 // avanza `flow` con flowReducer en cada paso (busy → resultado).
+function finish(r: any) {
+  const rt = resultText(r);
+  setFlow(flowReducer(flow, { type: "done", ok: rt.ok, text: rt.text }));
+}
+
 async function handleFlowAction(act: string, ds: DOMStringMap) {
   switch (act) {
     case "launch-open": {
+      if (flow.view !== "list") return;
       const id = ds.id;
       if (!id) return;
       setFlow(flowReducer(flow, { type: "busy", label: "Cargando workflows…" }));
@@ -257,8 +263,7 @@ async function handleFlowAction(act: string, ds: DOMStringMap) {
           })
         );
       } else {
-        const rt = resultText(r);
-        setFlow(flowReducer(flow, { type: "done", ok: rt.ok, text: rt.text }));
+        finish(r);
       }
       break;
     }
@@ -270,12 +275,12 @@ async function handleFlowAction(act: string, ds: DOMStringMap) {
       break;
     }
     case "retry": {
+      if (flow.view !== "list") return;
       const id = ds.id;
       if (!id) return;
       setFlow(flowReducer(flow, { type: "busy", label: "Lanzando…" }));
       const r = await retryProposal(apiDeps, id);
-      const rt = resultText(r);
-      setFlow(flowReducer(flow, { type: "done", ok: rt.ok, text: rt.text }));
+      finish(r);
       break;
     }
     case "other":
@@ -293,13 +298,11 @@ async function handleFlowAction(act: string, ds: DOMStringMap) {
       if (current.kind === "launch") {
         setFlow(flowReducer(flow, { type: "busy", label: "Lanzando…" }));
         const r = await launchProposal(apiDeps, current.proposalId, current.workflow.id);
-        const rt = resultText(r);
-        setFlow(flowReducer(flow, { type: "done", ok: rt.ok, text: rt.text }));
+        finish(r);
       } else {
         setFlow(flowReducer(flow, { type: "busy", label: "Ignorando…" }));
         const r = await rejectProposal(apiDeps, current.proposalId);
-        const rt = resultText(r);
-        setFlow(flowReducer(flow, { type: "done", ok: rt.ok, text: rt.text }));
+        finish(r);
       }
       break;
     }

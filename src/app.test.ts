@@ -3,6 +3,7 @@ import test from "node:test";
 import { createKitsuneApp, processUpdates, sessionNameFor, type KitsuneApp } from "./app.js";
 import { TriageError, type Brain } from "./brain.js";
 import { workflowCheck, type Channel } from "./channels/telegram.js";
+import { createEventBus, type EventBus, type KitsuneEvent } from "./events.js";
 import { createPolicy } from "./policy.js";
 import { RoninError, type RoninClient } from "./ronin-client.js";
 import { openStore } from "./store.js";
@@ -21,7 +22,7 @@ const EVENT: InboxEvent = {
 };
 const PROPOSE: Triage = { action: "propose_session", repo: "todo-api", workflow: "plan-tdd-evidencia", request: "Valida títulos", reason: "claro" };
 
-function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name: string }>; now?: number; channel?: Partial<Channel>; reply?: () => Promise<void>; favoriteWorkflows?: string[]; catalog?: () => Catalog } = {}) {
+function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name: string }>; now?: number; channel?: Partial<Channel>; reply?: () => Promise<void>; favoriteWorkflows?: string[]; catalog?: () => Catalog; events?: EventBus } = {}) {
   const store = openStore(":memory:");
   const log: string[] = [];
   let clock = opts.now ?? 1_000;
@@ -53,7 +54,7 @@ function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name:
   const brain: Brain = { triage: async () => { if (opts.triage instanceof Error) throw opts.triage; return opts.triage ?? PROPOSE; } };
   const app = createKitsuneApp({
     store, brain, ronin, channel, policy: createPolicy({ chatId: 42 }), now: () => clock, ttlMs: 60_000,
-    favoriteWorkflows: opts.favoriteWorkflows ?? [],
+    favoriteWorkflows: opts.favoriteWorkflows ?? [], events: opts.events,
   });
   return { app, store, log, launches, advance: (ms: number) => { clock += ms; } };
 }
@@ -529,4 +530,76 @@ test("I5: la petición editada por el usuario se acota igual que la del motor", 
   await h.app.onChannelEvent({ type: "message", chatId: 42, messageId: 200, text: "€".repeat(5000), replyToMessageId: 102 });
   const request = h.store.getProposal(p.id)!.request;
   assert.ok(request.length <= 3500 && Buffer.byteLength(request, "utf8") <= 8000);
+});
+
+function captured() {
+  const bus = createEventBus(() => 1);
+  const events: KitsuneEvent[] = [];
+  bus.subscribe((e) => events.push(e));
+  return { bus, events, types: () => events.map((e) => e.type) };
+}
+
+test("un evento con propuesta publica triage_started, event_triaged y proposal_created", async () => {
+  const c = captured();
+  const h = harness({ events: c.bus });
+  await h.app.onInboxEvent(EVENT);
+  assert.deepEqual(c.types(), ["triage_started", "event_triaged", "proposal_created"]);
+  const created = c.events[2] as Extract<KitsuneEvent, { type: "proposal_created" }>;
+  assert.equal(created.title, EVENT.title);
+  assert.equal(created.repo, "todo-api");
+});
+
+test("fallo de clasificación publica event_triaged failed y error", async () => {
+  const c = captured();
+  const h = harness({ events: c.bus, triage: new TriageError("JSON inválido") });
+  await h.app.onInboxEvent(EVENT);
+  assert.deepEqual(c.types(), ["triage_started", "event_triaged", "error"]);
+  assert.equal((c.events[1] as Extract<KitsuneEvent, { type: "event_triaged" }>).action, "failed");
+});
+
+test("proposal_resolved launched incluye el sessionName del fake de Ronin", async () => {
+  const c = captured();
+  const h = harness({ events: c.bus });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(launchWith(p.id, 0));
+  const resolved = c.events.filter((e) => e.type === "proposal_resolved") as Extract<KitsuneEvent, { type: "proposal_resolved" }>[];
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0].status, "launched");
+  assert.equal(resolved[0].sessionName, "cowork-valida");
+});
+
+test("proposal_resolved failed cuando Ronin no puede lanzar, con su evento error", async () => {
+  const c = captured();
+  const h = harness({ events: c.bus, launch: async () => { throw new RoninError("UNREACHABLE", "Ronin no responde"); } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(launchWith(p.id, 0));
+  const resolved = c.events.filter((e) => e.type === "proposal_resolved") as Extract<KitsuneEvent, { type: "proposal_resolved" }>[];
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0].status, "failed");
+  const err = c.events.find((e) => e.type === "error") as Extract<KitsuneEvent, { type: "error" }> | undefined;
+  assert.ok(err?.message.startsWith("No se pudo lanzar"));
+});
+
+test("proposal_resolved rejected al rechazar la propuesta", async () => {
+  const c = captured();
+  const h = harness({ events: c.bus });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  await h.app.onChannelEvent(cb("reject", p.id));
+  const resolved = c.events.filter((e) => e.type === "proposal_resolved") as Extract<KitsuneEvent, { type: "proposal_resolved" }>[];
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0].status, "rejected");
+});
+
+test("proposal_resolved expired al expirar la propuesta", async () => {
+  const c = captured();
+  const h = harness({ events: c.bus });
+  await h.app.onInboxEvent(EVENT);
+  h.advance(60_001);
+  await h.app.sweepExpired();
+  const resolved = c.events.filter((e) => e.type === "proposal_resolved") as Extract<KitsuneEvent, { type: "proposal_resolved" }>[];
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0].status, "expired");
 });

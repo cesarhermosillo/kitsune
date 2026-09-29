@@ -1,6 +1,7 @@
 import { capRequest, TriageError, type Brain } from "./brain.js";
 import { parseUpdate, workflowCheck, type Channel, type ChannelEvent, type WorkflowOption } from "./channels/telegram.js";
 import type { TgUpdate } from "./channels/telegram-api.js";
+import type { EventBus, KitsuneEventInput } from "./events.js";
 import type { Policy } from "./policy.js";
 import { InvalidTransition } from "./proposals.js";
 import { RoninError, type RoninClient } from "./ronin-client.js";
@@ -12,6 +13,7 @@ export interface AppDeps {
   /** Nombres de workflows favoritos, en el orden en que deben mostrarse al elegir workflow (config.favoriteWorkflows). */
   favoriteWorkflows: string[];
   log?: (line: string) => void;
+  events?: EventBus;
 }
 export interface KitsuneApp {
   onInboxEvent(event: InboxEvent): Promise<void>;
@@ -94,6 +96,7 @@ export async function processUpdates(
 export function createKitsuneApp(deps: AppDeps): KitsuneApp {
   const { store, channel } = deps;
   const log = deps.log ?? (() => {});
+  const emit = (e: KitsuneEventInput) => deps.events?.publish(e);
 
   // Telegram es best-effort dentro de los flujos: un fallo al avisar o editar
   // (p. ej. "message is not modified" o "query is too old") nunca cambia el
@@ -139,6 +142,8 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
       }
       const failed = store.transition(p.id, "failed", deps.now(), { error: errorText(error) });
       store.audit("ronin", "launch_failed", p.id, { error: errorText(error) }, deps.now());
+      emit({ type: "proposal_resolved", id: p.id, status: "failed" });
+      emit({ type: "error", message: `No se pudo lanzar: ${errorText(error)}` });
       await edit(failed, `⚠️ No se pudo lanzar: ${errorText(error)}`);
       return;
     }
@@ -149,6 +154,7 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
     const updated = store.transition(p.id, "launched", deps.now(), { sessionName, error: null });
     store.trackSession(sessionName, p.id);
     store.audit("ronin", "session_created", p.id, { session: sessionName, ...(recovered ? { recovered: true } : {}) }, deps.now());
+    emit({ type: "proposal_resolved", id: p.id, status: "launched", sessionName });
     await edit(updated, `✅ Sesión ${sessionName} creada`);
   }
 
@@ -211,7 +217,9 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
         case "reject": {
           expect(p, "pending");
           await ack(event.callbackId, "Ignorada");
-          await edit(store.transition(p.id, "rejected", deps.now(), undefined, "pending"), "❌ Ignorada");
+          const rejected = store.transition(p.id, "rejected", deps.now(), undefined, "pending");
+          emit({ type: "proposal_resolved", id: p.id, status: "rejected" });
+          await edit(rejected, "❌ Ignorada");
           return;
         }
         case "edit": {
@@ -292,6 +300,7 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
     async onInboxEvent(event) {
       if (store.hasEvent(event.id)) return;
       store.saveEvent(event, deps.now());
+      emit({ type: "triage_started", title: event.title });
       store.audit("kitsune", "event", event.id, { kind: event.kind }, deps.now());
       let triage: Triage;
       let catalog: Catalog;
@@ -300,11 +309,14 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
         triage = await deps.brain.triage(event, catalog);
       } catch (error) {
         store.setTriage(event.id, null, "failed");
+        emit({ type: "event_triaged", title: event.title, action: "failed" });
         const reason = error instanceof TriageError ? error.message : errorText(error);
+        emit({ type: "error", message: `No pude clasificar: ${event.title}` });
         await notice(`⚠️ No pude clasificar: ${event.title}\n${event.url}\n\n${clip(event.body)}\n\n(${reason})`);
         return;
       }
       store.setTriage(event.id, triage, "done");
+      emit({ type: "event_triaged", title: event.title, action: triage.action });
       if (triage.action === "ignore") return;
       if (triage.action === "notify") {
         await notice(`🦊 ${triage.summary}\n${event.url}`);
@@ -319,6 +331,7 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
         eventId: event.id, repo: triage.repo, workflowId: workflow.id, workflowName: workflow.name,
         request: triage.request, origin: `clickup:${event.meta.taskId}`, title: event.title, url: event.url,
       }, deps.now());
+      emit({ type: "proposal_created", id: p.id, title: p.title, url: p.url, repo: p.repo, workflow: p.workflowName });
       // Si Telegram falla, la propuesta queda sin message id y redeliver() la reenvía.
       try { store.setMessageId(p.id, await channel.sendProposal(p, event)); }
       catch (error) { log(`[telegram] no se pudo enviar la propuesta ${p.id}: ${errorText(error)}`); }
@@ -336,6 +349,7 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
       for (const p of store.listPending()) {
         if (deps.now() - p.createdAt <= deps.ttlMs) continue;
         const expired = store.transition(p.id, "expired", deps.now());
+        emit({ type: "proposal_resolved", id: p.id, status: "expired" });
         await edit(expired, "⌛ Expirada");
         count++;
       }

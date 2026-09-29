@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Channel } from "./channels/telegram.js";
+import { createEventBus, type KitsuneEvent } from "./events.js";
 import type { RoninClient } from "./ronin-client.js";
 import { openStore } from "./store.js";
 import type { SessionStatus } from "./types.js";
@@ -146,4 +147,45 @@ test("I3: sin pregunta previa no escribe en la sesión", async () => {
   h.store.updateSession = (name, patch) => { writes.push(patch); original(name, patch); };
   await h.watcher.tick();
   assert.deepEqual(writes, []);
+});
+
+function withBus(seq: SessionStatus[][]) {
+  const store = openStore(":memory:");
+  store.saveEvent({ source: "clickup", id: "e", kind: "task_assigned", title: "", body: "", url: "", author: "", at: "", meta: { taskId: "", listId: "", listName: "", tags: [] } }, 1);
+  const p = store.createProposal({ eventId: "e", repo: "r", workflowId: "w", workflowName: "w", request: "x", origin: "clickup:1", title: "", url: "" }, 1);
+  store.trackSession("cowork-a", p.id);
+  const bus = createEventBus(() => 1);
+  const events: KitsuneEvent[] = [];
+  bus.subscribe((e) => events.push(e));
+  let i = 0;
+  const ronin = { sessionStatus: async () => seq[Math.min(i++, seq.length - 1)] } as unknown as RoninClient;
+  let msg = 500;
+  const channel = { sendNotice: async () => ++msg, sendQuestion: async () => ++msg } as unknown as Channel;
+  return { events, watcher: createWatcher({ store, ronin, channel, events: bus }) };
+}
+
+test("publica session_update en el primer tick y solo cuando cambia la etapa", async () => {
+  const h = withBus([[base], [base], [{ ...base, stage: "tests", stagesDone: 2 }]]);
+  await h.watcher.tick(); await h.watcher.tick(); await h.watcher.tick();
+  const updates = h.events.filter((e) => e.type === "session_update");
+  assert.equal(updates.length, 2);
+  assert.deepEqual(updates.map((e) => (e as Extract<KitsuneEvent, { type: "session_update" }>).stage), ["implementing", "tests"]);
+});
+
+test("publica session_question con la pregunta", async () => {
+  const h = withBus([[{ ...base, attention: "decision", needsInput: true, question: "¿Sigo?" }]]);
+  await h.watcher.tick();
+  assert.ok(h.events.some((e) => e.type === "session_question" && e.question === "¿Sigo?"));
+});
+
+test("publica session_done al terminar", async () => {
+  const h = withBus([[{ ...base, stage: null, stagesDone: 4, stagesTotal: 4, attention: "idle" }]]);
+  await h.watcher.tick();
+  assert.ok(h.events.some((e) => e.type === "session_done" && e.name === "cowork-a"));
+});
+
+test("publica session_dead cuando la sesión desaparece", async () => {
+  const h = withBus([[]]);
+  await h.watcher.tick();
+  assert.ok(h.events.some((e) => e.type === "session_dead" && e.reason === "ya no existe"));
 });

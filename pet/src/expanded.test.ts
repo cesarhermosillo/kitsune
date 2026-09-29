@@ -12,7 +12,7 @@ describe("expandedRows", () => {
     const state: PetState = {
       ...EMPTY_STATE,
       pending: [
-        { id: "p1", title: "Arreglar CSS", url: "https://app.clickup.com/t/p1", repo: "kitsune", workflow: "fix", createdAt: 0 },
+        { id: "p1", title: "Arreglar CSS", url: "https://app.clickup.com/t/p1", repo: "kitsune", workflow: "fix", createdAt: 0, status: "pending" },
       ],
     };
     expect(expandedRows(state)).toEqual([
@@ -37,7 +37,7 @@ describe("expandedRows", () => {
   it("lists pending rows before session rows", () => {
     const state: PetState = {
       ...EMPTY_STATE,
-      pending: [{ id: "p1", title: "A", url: "https://x", repo: "r", workflow: "w", createdAt: 0 }],
+      pending: [{ id: "p1", title: "A", url: "https://x", repo: "r", workflow: "w", createdAt: 0, status: "pending" }],
       sessions: [{ name: "s1", stage: "x", stagesDone: 1, stagesTotal: 1, needsInput: false }],
     };
     expect(expandedRows(state).map((r) => r.kind)).toEqual(["clickup", "ronin"]);

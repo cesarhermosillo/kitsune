@@ -18,6 +18,7 @@ export interface PendingItem {
   repo: string;
   workflow: string;
   createdAt: number;
+  status: "pending" | "failed";
 }
 
 export interface SessionItem {

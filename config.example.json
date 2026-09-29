@@ -6,5 +6,6 @@
   "telegram": { "chatId": 123456789 },
   "ronin": { "url": "http://localhost:8787" },
   "proposals": { "ttlHours": 24 },
-  "favoriteWorkflows": ["claude-plan-codex-impl", "pr-review-merge-dev"]
+  "favoriteWorkflows": ["claude-plan-codex-impl", "pr-review-merge-dev"],
+  "localApi": { "enabled": true, "port": 47823, "devOrigins": [] }
 }

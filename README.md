@@ -36,6 +36,28 @@ Nothing that creates or changes anything runs without your explicit approval.
 - **Ronin (MCP)**: `listar_repos_y_workflows`, `crear_sesion`, `estado_sesiones`, `responder_sesion`.
 - **Local state**: SQLite at `~/.kitsune/kitsune.db`, including a full audit log.
 
+## Local API (desktop pet)
+
+When `localApi.enabled` is `true` (the default), the daemon listens on `127.0.0.1:<localApi.port>`
+(default `47823`) for a **read-only** HTTP API meant for the desktop-pet UI. It never binds to
+anything but loopback, and a busy port just disables it (logged, daemon keeps running).
+
+- **Auth**: every request needs the header `x-kitsune-token: <token>`, checked with a
+  constant-time comparison. The token lives in `~/.kitsune/pet-token` (created on first start,
+  mode `0600`, owner-only).
+- **Origin allowlist**: `tauri://localhost` is always allowed; add any extra dev origins
+  (`http://localhost[:port]` or `http://127.0.0.1[:port]`) to `localApi.devOrigins` in
+  `config.json`. A request carrying an `Origin` header not on the list gets `403`, even with a
+  valid token. Allowed responses carry `Access-Control-Allow-Origin` and `Vary: Origin`; `OPTIONS`
+  preflights from an allowed origin get a `204` with `Access-Control-Allow-Headers: x-kitsune-token`
+  and `Access-Control-Allow-Methods: GET`.
+- **`GET /state`**: a JSON snapshot — `triaging`, `pending` proposals, active `sessions` (stage,
+  progress, pending questions) and the last `error`, if any.
+- **`GET /events`**: Server-Sent Events, one `data:` line per bus event (`triage_started`,
+  `event_triaged`, `proposal_created`, `proposal_resolved`, `session_update`, `session_question`,
+  `session_done`, `session_dead`, `error`), plus a `: hb` comment every 15 s.
+- No endpoint accepts writes, and no secret (tokens, `.env` contents) is ever exposed by it.
+
 ## Setup
 
 1. Node ≥ 22.13, Ronin running locally **with the MCP session tools** (`crear_sesion`,

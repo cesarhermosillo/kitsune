@@ -12,8 +12,12 @@ import { createClickUpConnector } from "./connectors/clickup.js";
 import { startLoops } from "./daemon.js";
 import { createEngine } from "./engines/index.js";
 import { runProcess } from "./engines/process.js";
+import { createEventBus } from "./events.js";
+import { startLocalApi, type LocalApi } from "./local-api.js";
+import { ensurePetToken } from "./pet-token.js";
 import { createPolicy } from "./policy.js";
 import { createRoninClient } from "./ronin-client.js";
+import { createStateTracker } from "./state.js";
 import { openStore } from "./store.js";
 import { createWatcher } from "./watcher.js";
 
@@ -45,12 +49,15 @@ function build(dir: string) {
   const channel = createTelegramChannel({ api, chatId: config.telegram.chatId });
   const ronin = createRoninClient({ url: config.ronin.url, token: secrets.roninCapabilityToken, fetch });
   const clickup = createClickUpConnector({ token: secrets.clickupToken, listIds: config.clickup.listIds, fetch, now: Date.now });
+  const events = createEventBus();
   const app = createKitsuneApp({
     store, brain: createBrain(engine, { timeoutMs: config.engineTimeoutSec * 1000, secrets: secretList }), ronin, channel,
     policy: createPolicy({ chatId: config.telegram.chatId }), now: Date.now, ttlMs: config.proposals.ttlHours * 3_600_000, log,
-    favoriteWorkflows: config.favoriteWorkflows,
+    favoriteWorkflows: config.favoriteWorkflows, events,
   });
-  return { config, store, engine, api, channel, ronin, clickup, app, redact: createRedactor(secretList), watcher: createWatcher({ store, ronin, channel }) };
+  const watcher = createWatcher({ store, ronin, channel, events });
+  const tracker = createStateTracker({ store, bus: events });
+  return { config, store, engine, api, channel, ronin, clickup, app, redact: createRedactor(secretList), watcher, events, tracker };
 }
 
 async function start(dir: string) {
@@ -58,6 +65,19 @@ async function start(dir: string) {
   const interrupted = await k.app.recoverInterrupted();
   if (interrupted > 0) log(`${interrupted} propuesta(s) interrumpida(s) marcadas como fallidas`);
   log(`Kitsune listo · motor ${k.config.engine} · Ronin ${k.config.ronin.url}`);
+  let localApi: LocalApi | null = null;
+  if (k.config.localApi.enabled) {
+    try {
+      localApi = await startLocalApi({
+        port: k.config.localApi.port, token: ensurePetToken(dir),
+        allowedOrigins: ["tauri://localhost", ...k.config.localApi.devOrigins],
+        snapshot: k.tracker.snapshot, bus: k.events,
+      });
+      log(`API local para la mascota en http://127.0.0.1:${localApi.port}`);
+    } catch (error) {
+      log(`API local deshabilitada: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const handle = startLoops([
     {
       name: "clickup", intervalMs: k.config.poll.intervalSec * 1000,
@@ -93,7 +113,7 @@ async function start(dir: string) {
       onAlert: async (e) => { await k.channel.sendNotice(`⚠️ El barrido de propuestas falla repetidamente: ${e instanceof Error ? e.message : String(e)}`); },
     },
   ], { sleep, log, maxBackoffMs: 300_000, alertAfter: 5 });
-  const shutdown = async () => { log("deteniendo…"); await handle.stop(); k.store.close(); process.exit(0); };
+  const shutdown = async () => { log("deteniendo…"); await handle.stop(); await localApi?.close(); k.store.close(); process.exit(0); };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 }

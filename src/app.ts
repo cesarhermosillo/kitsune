@@ -1,5 +1,5 @@
 import { capRequest, TriageError, type Brain } from "./brain.js";
-import { parseUpdate, type Channel, type ChannelEvent, type WorkflowOption } from "./channels/telegram.js";
+import { parseUpdate, workflowCheck, type Channel, type ChannelEvent, type WorkflowOption } from "./channels/telegram.js";
 import type { TgUpdate } from "./channels/telegram-api.js";
 import type { Policy } from "./policy.js";
 import { InvalidTransition } from "./proposals.js";
@@ -37,18 +37,20 @@ function favoriteWorkflowOptions(p: Proposal, catalog: Catalog, favorites: strin
   const options: WorkflowOption[] = [];
   const suggestedIndex = indexByName.get(p.workflowName);
   if (suggestedIndex !== undefined && !favoriteNames.includes(p.workflowName)) {
-    options.push({ index: suggestedIndex, label: workflowLabel(catalog.workflows[suggestedIndex], true) });
+    const w = catalog.workflows[suggestedIndex];
+    options.push({ index: suggestedIndex, label: workflowLabel(w, true), check: workflowCheck(w.name) });
   }
   for (const name of favoriteNames) {
     const index = indexByName.get(name)!;
-    options.push({ index, label: workflowLabel(catalog.workflows[index], name === p.workflowName) });
+    const w = catalog.workflows[index];
+    options.push({ index, label: workflowLabel(w, name === p.workflowName), check: workflowCheck(w.name) });
   }
   return options;
 }
 
 /** Pantalla "Otro…": todo el catálogo, mismo formato de etiquetas. */
 function allWorkflowOptions(p: Proposal, catalog: Catalog): WorkflowOption[] {
-  return catalog.workflows.map((w, index) => ({ index, label: workflowLabel(w, w.name === p.workflowName) }));
+  return catalog.workflows.map((w, index) => ({ index, label: workflowLabel(w, w.name === p.workflowName), check: workflowCheck(w.name) }));
 }
 
 const MAX_SESSION_NAME = 60;
@@ -109,6 +111,20 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
     try { await channel.editRaw(messageId, text); } catch (error) { log(`[telegram] no se pudo editar el selector: ${errorText(error)}`); }
   }
 
+  /**
+   * Lee el catálogo de Ronin antes de acusar recibo del toque. Si Ronin no responde, el error
+   * NO debe escapar (el spinner del botón se quedaría colgado sin avisar a nadie): se acusa
+   * recibo con un aviso y se devuelve null; la propuesta sigue pending y nada se lanza.
+   */
+  async function safeCatalog(callbackId: string): Promise<Catalog | null> {
+    try { return await deps.ronin.catalog(); }
+    catch (error) {
+      log(`[telegram] catalog falló al procesar el callback: ${errorText(error)}`);
+      await ack(callbackId, "Ronin no responde, intenta de nuevo");
+      return null;
+    }
+  }
+
   async function launch(p: Proposal): Promise<void> {
     const name = sessionNameFor(p);
     let session: { name: string };
@@ -153,7 +169,8 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
       switch (event.action) {
         case "approve": {
           expect(p, "pending");
-          const catalog = await deps.ronin.catalog();
+          const catalog = await safeCatalog(event.callbackId);
+          if (!catalog) return;
           await ack(event.callbackId, "Elige el workflow");
           const title = p.title || p.origin;
           await channel.sendWorkflowChoice(p, `¿Con qué workflow lanzo «${title}»?`, favoriteWorkflowOptions(p, catalog, deps.favoriteWorkflows), { other: true, cancel: true });
@@ -161,7 +178,8 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
         }
         case "other_workflows": {
           expect(p, "pending");
-          const catalog = await deps.ronin.catalog();
+          const catalog = await safeCatalog(event.callbackId);
+          if (!catalog) return;
           await ack(event.callbackId);
           const title = p.title || p.origin;
           await channel.sendWorkflowChoice(p, `¿Con qué workflow lanzo «${title}»?`, allWorkflowOptions(p, catalog), {});
@@ -174,9 +192,10 @@ export function createKitsuneApp(deps: AppDeps): KitsuneApp {
         }
         case "launch_with": {
           expect(p, "pending");
-          const catalog = await deps.ronin.catalog();
+          const catalog = await safeCatalog(event.callbackId);
+          if (!catalog) return;
           const wf = catalog.workflows[event.index ?? -1];
-          if (!wf) { await ack(event.callbackId, "Opción inválida"); return; }
+          if (!wf || workflowCheck(wf.name) !== event.check) { await ack(event.callbackId, "Opción inválida, vuelve a tocar ✅"); return; }
           await ack(event.callbackId, "Lanzando…");
           const approved = store.approveWith(p.id, { workflowId: wf.id, workflowName: wf.name }, deps.now());
           await launch(approved);

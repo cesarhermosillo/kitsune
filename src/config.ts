@@ -59,10 +59,12 @@ export function loadConfig(dir: string): { config: KitsuneConfig; secrets: Secre
   if (typeof chatId !== "number" || !Number.isInteger(chatId)) throw new ConfigError("telegram.chatId debe ser un número entero");
   const url = raw.ronin?.url ?? "http://localhost:8787";
   if (typeof url !== "string" || !/^https?:\/\//.test(url)) throw new ConfigError("ronin.url debe ser una URL http(s)");
-  const favoriteWorkflows = raw.favoriteWorkflows ?? [];
-  if (!Array.isArray(favoriteWorkflows) || !favoriteWorkflows.every((w) => typeof w === "string" && w.trim())) {
+  const rawFavorites = raw.favoriteWorkflows ?? [];
+  if (!Array.isArray(rawFavorites) || !rawFavorites.every((w) => typeof w === "string" && w.trim())) {
     throw new ConfigError("favoriteWorkflows debe ser una lista de strings no vacíos");
   }
+  // Dedupe preservando el orden: un mismo workflow repetido en config.json no debe producir botones duplicados.
+  const favoriteWorkflows = [...new Set(rawFavorites as string[])];
 
   const config: KitsuneConfig = {
     engine,

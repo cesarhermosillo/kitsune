@@ -5,10 +5,10 @@ export type CallbackAction =
   | "approve" | "reject" | "edit" | "retry" | "edit_request" | "edit_repo" | "edit_workflow" | "set_repo" | "set_workflow"
   | "launch_with" | "other_workflows" | "cancel_launch";
 export type ChannelEvent =
-  | { type: "callback"; callbackId: string; chatId: number; messageId: number; action: CallbackAction; proposalId: string; index?: number }
+  | { type: "callback"; callbackId: string; chatId: number; messageId: number; action: CallbackAction; proposalId: string; index?: number; check?: string }
   | { type: "message"; chatId: number; messageId: number; text: string; replyToMessageId?: number };
-/** Una entrada del selector de workflow: la etiqueta a mostrar y su índice en `catalog.workflows`. */
-export interface WorkflowOption { label: string; index: number }
+/** Una entrada del selector de workflow: la etiqueta a mostrar, su índice en `catalog.workflows` y su check (ver `workflowCheck`). */
+export interface WorkflowOption { label: string; index: number; check: string }
 export interface Channel {
   sendProposal(p: Proposal, event: InboxEvent | null): Promise<number>;
   updateProposal(p: Proposal, note: string): Promise<void>;
@@ -30,18 +30,30 @@ const CODES: Record<CallbackAction, string> = {
 };
 const ACTIONS = Object.fromEntries(Object.entries(CODES).map(([action, code]) => [code, action])) as Record<string, CallbackAction>;
 
-export function encodeCallback(action: CallbackAction, proposalId: string, index?: number): string {
-  return index === undefined ? `${CODES[action]}:${proposalId}` : `${CODES[action]}:${proposalId}:${index}`;
+/**
+ * Comprobante corto de que un índice de catálogo sigue apuntando al workflow que se mostró
+ * en el selector: los primeros 12 caracteres del nombre, saneados a [A-Za-z0-9_-] (todo lo
+ * demás se reemplaza por "_"). Se codifica como 4º campo de `launch_with` y se recalcula sobre
+ * el catálogo re-leído al procesar el toque; si no coincide, el catálogo cambió de orden.
+ */
+export function workflowCheck(name: string): string {
+  return name.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 12);
+}
+
+export function encodeCallback(action: CallbackAction, proposalId: string, index?: number, check?: string): string {
+  if (index === undefined) return `${CODES[action]}:${proposalId}`;
+  return check === undefined ? `${CODES[action]}:${proposalId}:${index}` : `${CODES[action]}:${proposalId}:${index}:${check}`;
 }
 
 export function parseUpdate(update: TgUpdate): ChannelEvent | null {
   const cb = update.callback_query;
   if (cb) {
-    const [code, proposalId, rawIndex] = (cb.data ?? "").split(":");
+    const [code, proposalId, rawIndex, rawCheck] = (cb.data ?? "").split(":");
     const action = ACTIONS[code];
     if (!action || !proposalId || !cb.message) return null;
     const event: ChannelEvent = { type: "callback", callbackId: cb.id, chatId: cb.message.chat.id, messageId: cb.message.message_id, action, proposalId };
     if (rawIndex !== undefined && /^\d+$/.test(rawIndex)) event.index = Number(rawIndex);
+    if (rawCheck !== undefined) event.check = rawCheck;
     return event;
   }
   const msg = update.message;
@@ -100,7 +112,7 @@ export function createTelegramChannel(opts: { api: TelegramApi; chatId: number }
       options.map((option, index) => [{ text: option, callback_data: encodeCallback(field === "repo" ? "set_repo" : "set_workflow", p.id, index) }]),
     )),
     sendWorkflowChoice: (p, title, options, extra) => {
-      const rows: Button[][] = options.map((o) => [{ text: o.label, callback_data: encodeCallback("launch_with", p.id, o.index) }]);
+      const rows: Button[][] = options.map((o) => [{ text: o.label, callback_data: encodeCallback("launch_with", p.id, o.index, o.check) }]);
       if (extra.other) rows.push([{ text: "Otro…", callback_data: encodeCallback("other_workflows", p.id) }]);
       if (extra.cancel) rows.push([{ text: "Cancelar", callback_data: encodeCallback("cancel_launch", p.id) }]);
       return send(title, keyboard(rows));

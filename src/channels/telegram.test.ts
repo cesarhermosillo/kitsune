@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createTelegramChannel, encodeCallback, parseUpdate, renderProposal } from "./telegram.js";
+import { createTelegramChannel, encodeCallback, parseUpdate, renderProposal, workflowCheck } from "./telegram.js";
 import { createTelegramApi, type TelegramApi } from "./telegram-api.js";
 import type { InboxEvent, Proposal } from "../types.js";
 
@@ -34,12 +34,20 @@ test("encodeCallback y parseUpdate hacen ida y vuelta", () => {
 });
 
 test("A: los códigos de launch_with/other_workflows/cancel_launch codifican corto y se parsean", () => {
-  assert.equal(encodeCallback("launch_with", "abc123defg", 3), "lw:abc123defg:3");
+  assert.equal(encodeCallback("launch_with", "abc123defg", 3, "hotfix"), "lw:abc123defg:3:hotfix");
   assert.equal(encodeCallback("other_workflows", "abc123defg"), "ow:abc123defg");
   assert.equal(encodeCallback("cancel_launch", "abc123defg"), "cx:abc123defg");
-  assert.ok(Buffer.byteLength(encodeCallback("launch_with", "abc123defg", 3), "utf8") <= 64);
-  assert.deepEqual(parseUpdate({ update_id: 9, callback_query: { id: "cb9", data: "lw:abc123defg:3", message: { message_id: 7, chat: { id: 42 } } } }),
-    { type: "callback", callbackId: "cb9", chatId: 42, messageId: 7, action: "launch_with", proposalId: "abc123defg", index: 3 });
+  assert.ok(Buffer.byteLength(encodeCallback("launch_with", "abc123defg", 3, "hotfix"), "utf8") <= 64);
+  assert.deepEqual(parseUpdate({ update_id: 9, callback_query: { id: "cb9", data: "lw:abc123defg:3:hotfix", message: { message_id: 7, chat: { id: 42 } } } }),
+    { type: "callback", callbackId: "cb9", chatId: 42, messageId: 7, action: "launch_with", proposalId: "abc123defg", index: 3, check: "hotfix" });
+});
+
+test("A: workflowCheck sanea el nombre a [A-Za-z0-9_-] y lo corta a 12 caracteres; launch_with cabe en 64 bytes con un nombre largo", () => {
+  assert.equal(workflowCheck("hotfix"), "hotfix");
+  assert.equal(workflowCheck("pr review/merge:dev"), "pr_review_me");
+  const longName = "un-workflow-con-un-nombre-muy-pero-muy-largo-que-no-cabria-entero";
+  const data = encodeCallback("launch_with", "abc123defg", 3, workflowCheck(longName));
+  assert.ok(Buffer.byteLength(data, "utf8") <= 64, data);
 });
 
 test("parseUpdate reconoce mensajes y respuestas", () => {
@@ -121,13 +129,13 @@ test("A: sendWorkflowChoice manda un botón launch_with por opción, más Otro�
   const { api, sent } = fakeApi();
   const channel = createTelegramChannel({ api, chatId: 42 });
   const id = await channel.sendWorkflowChoice(P, "¿Con qué workflow lanzo «Rechazar títulos vacíos»?",
-    [{ label: "⭐ claude-plan-codex-impl", index: 3 }, { label: "pr-review-merge-dev ⚠️ merge/deploy", index: 2 }],
+    [{ label: "⭐ claude-plan-codex-impl", index: 3, check: workflowCheck("claude-plan-codex-impl") }, { label: "pr-review-merge-dev ⚠️ merge/deploy", index: 2, check: workflowCheck("pr-review-merge-dev") }],
     { other: true, cancel: true });
   assert.equal(id, 101);
   const kb = (sent[0].args[2] as { reply_markup: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } }).reply_markup.inline_keyboard;
   assert.deepEqual(kb, [
-    [{ text: "⭐ claude-plan-codex-impl", callback_data: "lw:abc123defg:3" }],
-    [{ text: "pr-review-merge-dev ⚠️ merge/deploy", callback_data: "lw:abc123defg:2" }],
+    [{ text: "⭐ claude-plan-codex-impl", callback_data: `lw:abc123defg:3:${workflowCheck("claude-plan-codex-impl")}` }],
+    [{ text: "pr-review-merge-dev ⚠️ merge/deploy", callback_data: `lw:abc123defg:2:${workflowCheck("pr-review-merge-dev")}` }],
     [{ text: "Otro…", callback_data: "ow:abc123defg" }],
     [{ text: "Cancelar", callback_data: "cx:abc123defg" }],
   ]);
@@ -136,7 +144,7 @@ test("A: sendWorkflowChoice manda un botón launch_with por opción, más Otro�
 
 test("A: sendWorkflowChoice sin extra no agrega Otro…/Cancelar (pantalla de todo el catálogo)", async () => {
   const { api, sent } = fakeApi();
-  await createTelegramChannel({ api, chatId: 42 }).sendWorkflowChoice(P, "t", [{ label: "hotfix", index: 1 }], {});
+  await createTelegramChannel({ api, chatId: 42 }).sendWorkflowChoice(P, "t", [{ label: "hotfix", index: 1, check: workflowCheck("hotfix") }], {});
   const kb = (sent[0].args[2] as { reply_markup: { inline_keyboard: unknown[] } }).reply_markup.inline_keyboard;
   assert.equal(kb.length, 1);
 });

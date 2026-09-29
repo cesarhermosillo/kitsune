@@ -45,6 +45,11 @@ test("A: loadConfig acepta favoriteWorkflows y rechaza uno inválido", () => {
   }
 });
 
+test("A: favoriteWorkflows deduplica manteniendo el orden", () => {
+  const { d, cleanup } = dir({ config: { ...MIN, favoriteWorkflows: ["hotfix", "pr-review-merge-dev", "hotfix", "claude-plan-codex-impl", "pr-review-merge-dev"] }, env: ENV });
+  try { assert.deepEqual(loadConfig(d).config.favoriteWorkflows, ["hotfix", "pr-review-merge-dev", "claude-plan-codex-impl"]); } finally { cleanup(); }
+});
+
 test("loadConfig rechaza un .env legible por otros usuarios", () => {
   const { d, cleanup } = dir({ config: MIN, env: ENV, envMode: 0o644 });
   try {

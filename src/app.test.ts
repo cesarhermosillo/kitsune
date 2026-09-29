@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createKitsuneApp, processUpdates, sessionNameFor, type KitsuneApp } from "./app.js";
 import { TriageError, type Brain } from "./brain.js";
-import type { Channel } from "./channels/telegram.js";
+import { workflowCheck, type Channel } from "./channels/telegram.js";
 import { createPolicy } from "./policy.js";
 import { RoninError, type RoninClient } from "./ronin-client.js";
 import { openStore } from "./store.js";
@@ -21,7 +21,7 @@ const EVENT: InboxEvent = {
 };
 const PROPOSE: Triage = { action: "propose_session", repo: "todo-api", workflow: "plan-tdd-evidencia", request: "Valida títulos", reason: "claro" };
 
-function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name: string }>; now?: number; channel?: Partial<Channel>; reply?: () => Promise<void>; favoriteWorkflows?: string[] } = {}) {
+function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name: string }>; now?: number; channel?: Partial<Channel>; reply?: () => Promise<void>; favoriteWorkflows?: string[]; catalog?: () => Catalog } = {}) {
   const store = openStore(":memory:");
   const log: string[] = [];
   let clock = opts.now ?? 1_000;
@@ -45,7 +45,7 @@ function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name:
   };
   const launches: unknown[] = [];
   const ronin: RoninClient = {
-    catalog: async () => CATALOG,
+    catalog: async () => (opts.catalog ? opts.catalog() : CATALOG),
     createSession: async (input) => { launches.push(input); return opts.launch ? opts.launch() : { name: "cowork-valida" }; },
     sessionStatus: async () => [],
     replySession: opts.reply ?? (async () => {}),
@@ -59,7 +59,10 @@ function harness(opts: { triage?: Triage | Error; launch?: () => Promise<{ name:
 }
 
 const cb = (action: string, proposalId: string, extra: Record<string, unknown> = {}) => ({ type: "callback" as const, callbackId: "cb", chatId: 42, messageId: 999, action: action as never, proposalId, ...extra });
-const launchWith = (proposalId: string, index: number) => cb("launch_with", proposalId, { index });
+// Por defecto, el check corresponde al workflow que hoy vive en ese índice de CATALOG (lo que produciría un selector recién mostrado).
+// Los tests que quieren simular un catálogo que cambió de orden pasan `check` explícito.
+const launchWith = (proposalId: string, index: number, check = CATALOG.workflows[index] ? workflowCheck(CATALOG.workflows[index].name) : "sin_match") =>
+  cb("launch_with", proposalId, { index, check });
 
 test("evento nuevo con propuesta crea proposal pendiente y la envía", async () => {
   const h = harness();
@@ -141,12 +144,27 @@ test("A: dos launch_with distintos (doble toque) lanzan una sola sesión; el seg
   assert.ok(h.log.includes("ack:Ya no está vigente"));
 });
 
-test("A: launch_with con índice fuera de rango responde 'Opción inválida' y no lanza", async () => {
+test("A: launch_with con índice fuera de rango responde 'Opción inválida, vuelve a tocar ✅' y no lanza", async () => {
   const h = harness();
   await h.app.onInboxEvent(EVENT);
   const [p] = h.store.listPending();
   await h.app.onChannelEvent(launchWith(p.id, 99));
-  assert.ok(h.log.includes("ack:Opción inválida"));
+  assert.ok(h.log.includes("ack:Opción inválida, vuelve a tocar ✅"));
+  assert.equal(h.launches.length, 0);
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+});
+
+test("A: launch_with cuyo check no coincide con el catálogo re-leído (cambió de orden) responde 'Opción inválida, vuelve a tocar ✅' y no lanza", async () => {
+  let current = CATALOG;
+  const h = harness({ catalog: () => current });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  // El selector se mostró con el catálogo original: índice 1 = hotfix.
+  const checkShown = workflowCheck(CATALOG.workflows[1].name);
+  // Antes de procesar el toque, el catálogo de Ronin cambió de orden (p. ej. se agregó un workflow antes).
+  current = { repos: CATALOG.repos, workflows: [CATALOG.workflows[0], CATALOG.workflows[2], CATALOG.workflows[1], CATALOG.workflows[3]] };
+  await h.app.onChannelEvent(cb("launch_with", p.id, { index: 1, check: checkShown }));
+  assert.ok(h.log.includes("ack:Opción inválida, vuelve a tocar ✅"));
   assert.equal(h.launches.length, 0);
   assert.equal(h.store.getProposal(p.id)?.status, "pending");
 });
@@ -169,6 +187,43 @@ test("A: cancel_launch ack 'Cancelado' y deja la propuesta pending sin lanzar", 
   assert.ok(h.log.includes("ack:Cancelado"));
   assert.equal(h.store.getProposal(p.id)?.status, "pending");
   assert.equal(h.launches.length, 0);
+});
+
+test("B: approve con Ronin caído avisa 'Ronin no responde, intenta de nuevo' y deja la propuesta pending sin lanzar", async () => {
+  let down = false;
+  const h = harness({ catalog: () => { if (down) throw new RoninError("UNREACHABLE", "Ronin no responde"); return CATALOG; } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  down = true;
+  await h.app.onChannelEvent(cb("approve", p.id));
+  assert.ok(h.log.includes("ack:Ronin no responde, intenta de nuevo"));
+  assert.ok(!h.log.some((l) => l.startsWith("wfchoice:")));
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+  assert.equal(h.launches.length, 0);
+});
+
+test("B: other_workflows con Ronin caído avisa 'Ronin no responde, intenta de nuevo' y no lanza", async () => {
+  let down = false;
+  const h = harness({ catalog: () => { if (down) throw new RoninError("UNREACHABLE", "Ronin no responde"); return CATALOG; } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  down = true;
+  await h.app.onChannelEvent(cb("other_workflows", p.id));
+  assert.ok(h.log.includes("ack:Ronin no responde, intenta de nuevo"));
+  assert.ok(!h.log.some((l) => l.startsWith("wfchoice:")));
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
+});
+
+test("B: launch_with con Ronin caído avisa 'Ronin no responde, intenta de nuevo' y no lanza ni cambia la propuesta", async () => {
+  let down = false;
+  const h = harness({ catalog: () => { if (down) throw new RoninError("UNREACHABLE", "Ronin no responde"); return CATALOG; } });
+  await h.app.onInboxEvent(EVENT);
+  const [p] = h.store.listPending();
+  down = true;
+  await h.app.onChannelEvent(launchWith(p.id, 0));
+  assert.ok(h.log.includes("ack:Ronin no responde, intenta de nuevo"));
+  assert.equal(h.launches.length, 0);
+  assert.equal(h.store.getProposal(p.id)?.status, "pending");
 });
 
 test("A: launch_with de un chat ajeno no hace nada y queda auditado", async () => {
@@ -340,7 +395,7 @@ test("C1: el ack se hace antes de cambiar el estado", async () => {
   });
   await h.app.onInboxEvent(EVENT);
   ref.id = h.store.listPending()[0].id;
-  await h.app.onChannelEvent({ type: "callback", callbackId: "cb", chatId: 42, messageId: 999, action: "launch_with", proposalId: ref.id, index: 0 } as never);
+  await h.app.onChannelEvent({ type: "callback", callbackId: "cb", chatId: 42, messageId: 999, action: "launch_with", proposalId: ref.id, index: 0, check: workflowCheck(CATALOG.workflows[0].name) } as never);
   assert.equal(statusAtAck, "pending");
 });
 
